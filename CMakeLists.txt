@@ -25,24 +25,79 @@ pkg_check_modules(SDL2_GFX REQUIRED SDL2_gfx)
 
 # --- MediaPipe --------------------------------------------------------------
 # The facial filters run MediaPipe's Face Landmarker (Tasks Vision C++ API).
-# Prebuilt aarch64 artifacts come from https://github.com/sepinedas/media-pipe-builder,
-# whose .deb installs a pkg-config file; MEDIAPIPE_ROOT overrides the lookup for
-# a tarball extracted somewhere else.
+# Prebuilt aarch64 artifacts come from https://github.com/sepinedas/media-pipe-builder.
+#
+# Three ways to find it, in order, so a hand-extracted tarball works as well as
+# the .deb:
+#   1. -DMEDIAPIPE_ROOT=/path  -- explicit, always wins
+#   2. pkg-config `mediapipe`  -- what the .deb registers
+#   3. probing the usual install layouts
 set(MEDIAPIPE_ROOT "" CACHE PATH
     "Root of a MediaPipe install (the dir holding include/ and lib/)")
 
+set(MEDIAPIPE_PROBE_HEADER mediapipe/framework/formats/image.h)
+
+if(NOT MEDIAPIPE_ROOT)
+  pkg_check_modules(MEDIAPIPE QUIET mediapipe)
+endif()
+
+if(NOT MEDIAPIPE_ROOT AND NOT MEDIAPIPE_FOUND)
+  # No .pc registered. Look where the package and a hand-extracted tarball
+  # normally land. /opt/mediapipe/current is the symlink the .deb maintains;
+  # after it, take the highest-sorting versioned directory.
+  file(GLOB MEDIAPIPE_VERSIONED LIST_DIRECTORIES true "/opt/mediapipe/*")
+  if(MEDIAPIPE_VERSIONED)
+    list(SORT MEDIAPIPE_VERSIONED)
+    list(REVERSE MEDIAPIPE_VERSIONED)
+  endif()
+  # /usr is deliberately not probed: nothing installs MediaPipe there, and a
+  # stray header would match while the library sits in a multiarch libdir this
+  # does not search, turning a clean "not found" into a confusing hard error.
+  foreach(dir "/opt/mediapipe/current" ${MEDIAPIPE_VERSIONED} "/usr/local")
+    if(EXISTS "${dir}/include/${MEDIAPIPE_PROBE_HEADER}")
+      set(MEDIAPIPE_ROOT "${dir}")
+      message(STATUS "Found MediaPipe by probing: ${MEDIAPIPE_ROOT}")
+      break()
+    endif()
+  endforeach()
+endif()
+
 if(MEDIAPIPE_ROOT)
-  find_path(MEDIAPIPE_INCLUDE_DIR mediapipe/framework/formats/image.h
-            PATHS "${MEDIAPIPE_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
+  # No REQUIRED here: that needs CMake 3.18 while this project declares 3.16,
+  # and an explicit check gives a more useful message anyway.
+  find_path(MEDIAPIPE_INCLUDE_DIR ${MEDIAPIPE_PROBE_HEADER}
+            PATHS "${MEDIAPIPE_ROOT}/include" NO_DEFAULT_PATH)
   find_library(MEDIAPIPE_LIBRARY mediapipe_tasks
-               PATHS "${MEDIAPIPE_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
+               PATHS "${MEDIAPIPE_ROOT}/lib" NO_DEFAULT_PATH)
+  if(NOT MEDIAPIPE_INCLUDE_DIR OR NOT MEDIAPIPE_LIBRARY)
+    message(FATAL_ERROR
+      "${MEDIAPIPE_ROOT} does not look like a MediaPipe install. Expected:\n"
+      "    ${MEDIAPIPE_ROOT}/include/${MEDIAPIPE_PROBE_HEADER}\n"
+      "    ${MEDIAPIPE_ROOT}/lib/libmediapipe_tasks.so")
+  endif()
   set(MEDIAPIPE_INCLUDE_DIRS "${MEDIAPIPE_INCLUDE_DIR}")
   set(MEDIAPIPE_LIBRARIES "${MEDIAPIPE_LIBRARY}")
-else()
-  pkg_check_modules(MEDIAPIPE REQUIRED mediapipe)
+  # A tarball install is not on the ldconfig path the way the .deb is, so bake
+  # the location in rather than making the user set LD_LIBRARY_PATH.
+  set(MEDIAPIPE_RPATH "${MEDIAPIPE_ROOT}/lib")
+elseif(MEDIAPIPE_FOUND)
   # pkg-config hands back a bare `-lmediapipe_tasks`; keep its -L too so a
   # versioned /opt/mediapipe/<ver>/lib install links without extra flags.
   link_directories(${MEDIAPIPE_LIBRARY_DIRS})
+else()
+  message(FATAL_ERROR
+    "MediaPipe not found.\n"
+    "The facial filters need MediaPipe's Tasks Vision C++ library "
+    "(libmediapipe_tasks.so + headers + face_landmarker.task).\n"
+    "Install the .deb from https://github.com/sepinedas/media-pipe-builder "
+    "releases:\n"
+    "    sudo dpkg -i libmediapipe_*_arm64.deb\n"
+    "or point this build at an extracted tarball:\n"
+    "    cmake -B build -S . -DMEDIAPIPE_ROOT=/path/to/mediapipe\n"
+    "Note that the package must be built from media-pipe-builder at or after "
+    "the commit that added overlay/force_export.cc's image-IO exports; older "
+    "releases configure fine and then fail to link "
+    "mediapipe::formats::MatView.")
 endif()
 
 add_executable(open-lego-camera
@@ -76,6 +131,12 @@ target_link_libraries(open-lego-camera PRIVATE
 # MediaPipe here is built CPU-only; the GPU code paths in headers such as
 # image.h are compiled out by the same define the library was built with.
 target_compile_definitions(open-lego-camera PRIVATE MEDIAPIPE_DISABLE_GPU=1)
+
+if(MEDIAPIPE_RPATH)
+  set_target_properties(open-lego-camera PROPERTIES
+                        BUILD_RPATH "${MEDIAPIPE_RPATH}"
+                        INSTALL_RPATH "${MEDIAPIPE_RPATH}")
+endif()
 
 target_compile_options(open-lego-camera PRIVATE ${SDL2_GFX_CFLAGS_OTHER} -Wall -Wextra)
 
