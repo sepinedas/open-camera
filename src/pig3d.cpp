@@ -14,7 +14,14 @@ using cv::Vec3f;
 using cv::Matx33f;
 
 constexpr float kPi = 3.14159265358979f;
-constexpr int kSS = 2;         // supersampling factor for anti-aliasing
+// Supersampling factor for anti-aliasing. This stays at 2 even on a Pi 5, and
+// the limit is memory bandwidth rather than arithmetic: the colour layer,
+// coverage mask and z-buffer come to 20 bytes per supersample, so a pig
+// covering a 600x700 region already allocates and clears ~34 MB per frame
+// (~1 GB/s at 30 fps). Raising this to 3 would put that past 75 MB per frame,
+// a meaningful slice of the board's ~17 GB/s, to buy a barely visible
+// improvement on the ear silhouettes.
+constexpr int kSS = 2;
 constexpr float kCamZ = 7.0f;  // camera distance in model units (eye-widths)
 
 float clampf(float v, float lo, float hi) {
@@ -251,27 +258,37 @@ struct Pose {
     float scale;        // model unit -> pixels at the head's depth
 };
 
-// Estimate head pose from the eye landmarks and face box. The eye line fixes
-// roll and the in-plane scale; where the eyes sit inside the box gives rough
-// yaw/pitch. Model eyes sit at (+-0.5, -0.35, -0.2), so the model origin is the
-// head centre and the whole rig rotates about it.
-Pose estimatePose(const cv::Rect& f, bool hasEyes, cv::Point2f le,
-                  cv::Point2f re) {
+// Estimate head pose from the measured head landmarks and the face box. The
+// eye line fixes roll and the in-plane scale. Yaw/pitch are taken from `head`
+// when the caller measured them from the face mesh; otherwise they fall back to
+// the old approximation from where the eyes sit inside the box. Model eyes sit
+// at (+-0.5, -0.35, -0.2), so the model origin is the head centre and the whole
+// rig rotates about it.
+Pose estimatePose(const cv::Rect& f, const Head& head) {
     float roll = 0.f, yaw = 0.f, pitch = 0.f, eyeDist;
     cv::Point2f eyeMid;
-    if (hasEyes) {
-        cv::Point2f d = re - le;
+    if (head.hasEyes) {
+        cv::Point2f d = head.rightEye - head.leftEye;
         eyeDist = std::sqrt(d.x * d.x + d.y * d.y);
-        eyeMid = (le + re) * 0.5f;
+        eyeMid = (head.leftEye + head.rightEye) * 0.5f;
         roll = std::atan2(d.y, d.x);
-        float bcx = f.x + f.width * 0.5f;
-        float nx = (eyeMid.x - bcx) / (0.5f * f.width);
-        float ny = (eyeMid.y - (f.y + 0.45f * f.height)) / (0.5f * f.height);
-        yaw = clampf(nx * 2.2f, -0.9f, 0.9f);   // + => head turned toward image-right
-        pitch = clampf(-ny * 1.1f, -0.5f, 0.5f); // + => chin up
+        if (head.hasPose) {
+            yaw = clampf(head.yaw, -0.95f, 0.95f);
+            pitch = clampf(head.pitch, -0.6f, 0.6f);
+        } else {
+            float bcx = f.x + f.width * 0.5f;
+            float nx = (eyeMid.x - bcx) / (0.5f * f.width);
+            float ny = (eyeMid.y - (f.y + 0.45f * f.height)) / (0.5f * f.height);
+            yaw = clampf(nx * 2.2f, -0.9f, 0.9f);    // + => turned toward image-right
+            pitch = clampf(-ny * 1.1f, -0.5f, 0.5f); // + => chin up
+        }
     } else {
         eyeDist = 0.42f * f.width;
         eyeMid = cv::Point2f(f.x + 0.5f * f.width, f.y + 0.42f * f.height);
+        if (head.hasPose) {
+            yaw = clampf(head.yaw, -0.95f, 0.95f);
+            pitch = clampf(head.pitch, -0.6f, 0.6f);
+        }
     }
 
     // R = Rz(roll) * Ry(yaw) * Rx(pitch), applied to model points.
@@ -387,10 +404,18 @@ void raster(const Mesh& m, const Pose& ps, float ssScale, cv::Point2f ssOrg,
 
 void render(cv::Mat& frame, const cv::Rect& face, bool hasEyes,
             cv::Point2f leftEye, cv::Point2f rightEye, double phase) {
+    Head h;
+    h.hasEyes = hasEyes;
+    h.leftEye = leftEye;
+    h.rightEye = rightEye;
+    render(frame, face, h, phase);
+}
+
+void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase) {
     if (frame.empty() || frame.type() != CV_8UC3) return;
     if (face.width < 40 || face.height < 40) return;
 
-    Pose ps = estimatePose(face, hasEyes, leftEye, rightEye);
+    Pose ps = estimatePose(face, head);
     if (ps.scale < 8.f) return;
 
     float wig = 0.05f * std::sin((float)phase * 0.11f);

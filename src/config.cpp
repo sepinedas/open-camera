@@ -17,10 +17,11 @@ std::string defaultOutputDir() {
 
 // Create `path` and every missing parent (like `mkdir -p`). Returns true when
 // the full directory exists afterwards. A plain ::mkdir only creates the leaf,
-// so on a headless Raspberry Pi OS Lite install (common on the Zero 2 W) where
-// ~/Pictures doesn't exist yet, it fails with ENOENT and captures are silently
-// lost. Desktop images (typical on the Pi 5) ship ~/Pictures via xdg-user-dirs,
-// which is why the single-level mkdir happened to work there.
+// so on a headless Raspberry Pi OS Lite install -- which is what this app
+// wants, since it drives KMS/DRM directly -- ~/Pictures doesn't exist yet and
+// it fails with ENOENT, silently losing captures. Desktop images ship
+// ~/Pictures via xdg-user-dirs, which is why the single-level mkdir happened
+// to work there.
 bool ensureDir(const std::string& path) {
     if (path.empty()) return false;
     std::string partial;
@@ -44,7 +45,7 @@ bool ensureDir(const std::string& path) {
 
 static void printUsage(const char* prog) {
     std::cout <<
-        "open-lego-camera - icon-only camera for the Raspberry Pi Zero 2 W\n\n"
+        "open-lego-camera - icon-only camera for the Raspberry Pi 5\n\n"
         "Usage: " << prog << " [options]\n\n"
         "  --camera auto|picam|webcam   camera source (default: auto)\n"
         "  --output-dir DIR             where captures are saved\n"
@@ -64,10 +65,10 @@ static void printUsage(const char* prog) {
         "  --touch-flip-y               mirror touch vertically\n"
         "  --driver NAME                force SDL video driver (kmsdrm, fbcon, x11)\n"
         "  --windowed                   run in a window instead of fullscreen\n"
-        "  --face-cascade PATH          Haar face-cascade XML for the facial\n"
-        "                               filters (default: system opencv-data;\n"
-        "                               haarcascade_eye.xml beside it is used for\n"
-        "                               the pig-face filter's angle tracking)\n"
+        "  --face-model PATH            MediaPipe face_landmarker.task bundle\n"
+        "                               driving the facial filters (default: the\n"
+        "                               packaged model under /opt/mediapipe or\n"
+        "                               /usr/share/mediapipe/models)\n"
         "  --no-battery                 skip the Waveshare UPS HAT (D) battery\n"
         "                               gauge (it is auto-detected otherwise)\n"
         "  --battery-bus N              I2C bus the UPS HAT is on (default: 1)\n"
@@ -160,9 +161,9 @@ bool parseArgs(int argc, char** argv, Config& out, int* exitCode) {
             out.driver = v;
         } else if (a == "--windowed") {
             out.windowed = true;
-        } else if (a == "--face-cascade") {
+        } else if (a == "--face-model") {
             const char* v = need(i); if (!v) return false;
-            out.faceCascade = v;
+            out.faceModel = v;
         } else if (a == "--no-battery") {
             out.battery = false;
         } else if (a == "--battery-bus") {

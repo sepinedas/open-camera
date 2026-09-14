@@ -486,10 +486,11 @@ bool App::init(const Config& cfg) {
     if (battery_) std::cout << "battery: " << battery_->description() << "\n";
 
     gallery_ = std::make_unique<Gallery>(cfg_.outputDir);
-    if (!cfg_.faceCascade.empty()) faceFilter_.setCascade(cfg_.faceCascade);
+    if (!cfg_.faceModel.empty()) faceFilter_.setModel(cfg_.faceModel);
     if (!faceFilter_.ready())
-        std::cerr << "filters: no face cascade found; facial filters disabled "
-                     "(install `opencv-data` or pass --face-cascade)\n";
+        std::cerr << "filters: no MediaPipe face_landmarker.task found; facial "
+                     "filters disabled (install the MediaPipe package or pass "
+                     "--face-model)\n";
     refreshThumbnail();
     menu_.wake();
     return true;
@@ -724,8 +725,8 @@ void App::capturePhoto() {
     cv::Mat shot = cam_->nativeToBGR(lastNative_);
     if (shot.empty()) return;
     shot = rotatedBGR(shot, cfg_.cameraRotate); // to display orientation first, so
-                                                // the upright-only cascade can find
-                                                // the face; matches the preview
+                                                // the face detector sees an upright
+                                                // face; matches the preview
     faceFilter_.apply(shot, filter_, filterPhase_);
     cam_->cropZoom(shot);
     std::string path = timestampName("IMG", ".jpg");
@@ -795,8 +796,9 @@ bool App::setDisplayPower(bool on) {
     return rc == 0;
 }
 
-// Blank the screen and, on a Pi, power the panel down to save energy on the
-// Zero 2 W. Wakes on a double-tap (see onTap) or any key.
+// Blank the screen and, on a Pi, power the panel down to save energy (a Pi 5
+// idles at several watts, so the panel is worth switching off). Wakes on a
+// double-tap (see onTap) or any key.
 void App::enterSleep() {
     mode_ = Mode::Sleep;
     lastSleepTapMs_ = 0;
@@ -892,14 +894,15 @@ void App::renderCamera() {
     // rest (see renderFilteredNV12). A BGR webcam or a renderer without NV12
     // textures falls back to converting the full frame.
     //
-    // The face cascade only finds upright faces, so filtering must run on the
-    // frame in *display* orientation. When --camera-rotate spins the image
-    // (e.g. an upside-down camera corrected with 180), the NV12 fast path -- which
-    // detects and reshapes on the un-rotated native buffer and rotates only at
-    // blit -- would look for an upright face in a rotated frame and find none, so
-    // the filter silently did nothing. Restrict the fast path to the unrotated
-    // case and route rotated filtering through the BGR path below, which rotates
-    // to display orientation *before* detecting and reshaping.
+    // MediaPipe's face detector only finds roughly upright faces, so filtering
+    // must run on the frame in *display* orientation. When --camera-rotate spins
+    // the image (e.g. an upside-down camera corrected with 180), the NV12 fast
+    // path -- which detects and reshapes on the un-rotated native buffer and
+    // rotates only at blit -- would look for an upright face in a rotated frame
+    // and find none, so the filter silently did nothing. Restrict the fast path
+    // to the unrotated case and route rotated filtering through the BGR path
+    // below, which rotates to display orientation *before* detecting and
+    // reshaping.
     const bool nv12FilterPath = filtering &&
                                 cam_->format() == PixelFormat::NV12 &&
                                 !nv12Unsupported_ && !lastNative_.empty() &&
@@ -909,7 +912,7 @@ void App::renderCamera() {
     if (filtering && !nv12FilterPath) {
         // Full-resolution BGR: convert, rotate to display orientation, reshape
         // the face, then zoom. Reshaping after the rotation lets the upright-only
-        // cascade find the face; running it before the zoom crop (and at full
+        // detector find the face; running it before the zoom crop (and at full
         // resolution) matches the NV12 preview path so a photo carries exactly the
         // expression shown on screen.
         cv::Mat bgr = cam_->nativeToBGR(lastNative_);
@@ -987,15 +990,17 @@ void App::renderCamera() {
     present();
 }
 
-// Filtered preview that keeps the frame in NV12. Detection runs on the Y plane
-// (already a luma image, so no colour convert), and only the face region is
-// converted to BGR, reshaped, and re-encoded back into a private NV12 copy. The
-// GPU then does the YUV->RGB conversion and the zoom crop for the whole frame,
-// exactly as on the unfiltered fast path -- so turning a filter on no longer
-// forces a full-frame CPU convert every frame.
+// Filtered preview that keeps the frame in NV12. Detection gets a small colour
+// image built by downscaling the Y and UV planes separately (never a
+// full-frame convert), and only the face region is converted to BGR, reshaped,
+// and re-encoded back into a private NV12 copy. The GPU then does the YUV->RGB
+// conversion and the zoom crop for the whole frame, exactly as on the
+// unfiltered fast path -- so turning a filter on still costs work proportional
+// to the face, not to the frame.
 void App::renderFilteredNV12() {
     const int W = cam_->width(), H = cam_->height();
-    faceFilter_.updateDetection(lastNative_.rowRange(0, H)); // Y plane == luma
+    faceFilter_.updateDetection(
+        Camera::nv12ToBGRScaled(lastNative_, FaceFilter::detectionWidth()));
     cv::Rect region = faceFilter_.dirtyRegion(filter_, W, H);
 
     clear();

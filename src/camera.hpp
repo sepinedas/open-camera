@@ -61,6 +61,14 @@ public:
     // single-channel buffer; `r` is in luma pixels, even on all sides.
     static cv::Mat nv12CropToBGR(const cv::Mat& nv12, const cv::Rect& r);
 
+    // Downscale a whole NV12 frame straight to a small BGR image, for handing
+    // to face detection. Converting first and resizing after would cost a
+    // full-frame YUV->RGB pass every frame -- exactly what the NV12 preview
+    // path exists to avoid -- so the Y and the interleaved UV planes are
+    // resized separately and only the small result is converted, keeping the
+    // work proportional to `targetW` instead of the capture size.
+    static cv::Mat nv12ToBGRScaled(const cv::Mat& nv12, int targetW);
+
     // Encode a BGR region back into `nv12` at `at` (even coords), writing both
     // the Y and the 2x2-subsampled UV planes. Inverse of nv12CropToBGR().
     static void bgrIntoNV12(const cv::Mat& bgr, cv::Mat& nv12, cv::Point at);

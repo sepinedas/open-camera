@@ -1,10 +1,10 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
-#include <opencv2/objdetect.hpp>
 
 #include "types.hpp"
 
@@ -20,41 +20,63 @@ namespace olc {
 //
 // The "pig face" filter instead overlays real 3D models -- mesh ears and a
 // protruding snout with nostrils -- rendered by `pig3d` through a perspective
-// camera. To make them share the face's orientation and perspective, the head
-// pose (roll/yaw/pitch) is estimated from a small set of landmarks: the two eyes
-// (a stock eye Haar cascade) give the eye line -> roll and scale, and where the
-// eyes sit inside the face box gives a rough turn (yaw) and nod (pitch). The
-// meshes are then oriented by that pose, so the snout foreshortens and the ears
+// camera, oriented by the head pose so the snout foreshortens and the ears
 // swing around the head instead of sitting on top like stickers.
 //
-// Faces (and eyes) are found with stock OpenCV Haar cascades (objdetect) and the
-// 3D rendering is a self-contained software rasteriser; no landmark-regression
-// model, contrib module or GPU is needed, which keeps it light enough for a Pi
-// Zero. When no eye cascade is available the pig falls back to the face box
-// alone (front-facing, upright).
+// Faces are found with **MediaPipe's Face Landmarker** (Tasks Vision C++ API,
+// CPU/TFLite), which returns a dense 478-point face mesh per face plus the
+// blendshape scores. That is what every filter is driven from:
+//
+//   * the warps are anchored to the *actual* mouth corners, lips and eyebrows
+//     instead of fixed fractions of a detector box, so they follow the real
+//     mouth wherever it is and whatever shape it already has;
+//   * mouth openness comes from the `jawOpen` blendshape rather than being
+//     guessed from the contrast of a mouth-shaped patch;
+//   * head roll/yaw/pitch for the pig are measured from the eye, nose, cheek
+//     and chin landmarks instead of from where a pair of eye boxes happen to
+//     sit inside a face box.
+//
+// The MediaPipe model bundle (`face_landmarker.task`) is found in the usual
+// install locations, or pointed at explicitly with `--face-model`.
+//
+// The MediaPipe headers pull in Abseil/protobuf/TFLite and need C++20, so the
+// landmarker lives behind a pimpl: only filters.cpp sees them.
 class FaceFilter {
 public:
-    // Loads the frontal-face cascade from the usual system locations.
+    // Loads the Face Landmarker bundle from the usual install locations.
     FaceFilter();
+    ~FaceFilter();
+    FaceFilter(const FaceFilter&) = delete;
+    FaceFilter& operator=(const FaceFilter&) = delete;
 
-    // Point the detector at an explicit cascade XML (from --face-cascade).
-    // Empty is a no-op; a bad path leaves any already-loaded cascade in place.
-    void setCascade(const std::string& path);
+    // Point the landmarker at an explicit model bundle (from --face-model).
+    // Empty is a no-op; a bad path leaves any already-loaded model in place.
+    void setModel(const std::string& path);
 
-    // True once a cascade is loaded and filtering can actually do something.
-    bool ready() const { return loaded_; }
+    // True once a model is loaded and filtering can actually do something.
+    bool ready() const;
 
     // Apply `filter` to `frame` (BGR, 8-bit, 3-channel) in place. `phase` is a
     // free-running per-frame counter that drives the tear animation. A no-op
-    // when the filter is None, no cascade loaded, or no face is found.
+    // when the filter is None, no model loaded, or no face is found.
     void apply(cv::Mat& frame, Filter filter, double phase);
 
     // --- region-limited API (keeps the NV12 preview off the CPU convert) ---
     //
-    // Refresh the detected faces from a luma/grayscale image (the NV12 Y plane
-    // is exactly that, so no colour conversion is needed). Honours the
-    // detect-every-N-frames cadence internally; call once per frame.
-    void updateDetection(const cv::Mat& luma);
+    // Refresh the detected faces from `src`, a BGR frame or a plain
+    // luma/grayscale one. Call once per frame: inference runs every frame, and
+    // MediaPipe's VIDEO mode tracks the face between full detections itself,
+    // so there is no detect-every-N-frames throttle on top.
+    //
+    // `src` may be any size -- it is downscaled to detectionWidth() internally
+    // -- but a caller that can produce the detection image cheaply (see
+    // Camera::nv12ToBGRScaled) should pre-scale it to exactly that width.
+    void updateDetection(const cv::Mat& src);
+
+    // Width the detection image is scaled to before inference. Landmarks come
+    // back normalized, so this never affects the coordinates -- only how much
+    // detail small faces keep.
+    static int detectionWidth();
 
     // The single frame-space rectangle covering everything `filter` will modify
     // for the currently-detected faces (face boxes + margin for the warp and
@@ -75,54 +97,58 @@ public:
                         cv::Point2f rightEye, double phase) const;
 
 private:
-    // Landmarks for one face: the two eye centres (full-res frame coords). When
-    // `has` is false the eyes were not found this detection and pig-face falls
-    // back to the face box for orientation.
-    struct FaceEyes {
-        bool has = false;
-        cv::Point2f left, right; // image-left and image-right eye centres
+    // Everything the filters need to know about one detected face, in full-res
+    // frame coordinates. Distilled from a MediaPipe FaceLandmarkerResult: the
+    // handful of mesh points each filter is anchored to, resolved into *image*
+    // order (left/right as seen on screen, so a mirrored preview works too),
+    // plus the head pose and expression measured from the mesh.
+    struct Face {
+        cv::Rect box;               // tight bounding box of the whole mesh
+        cv::Point2f eyeL, eyeR;     // eye centres
+        cv::Point2f mouthL, mouthR; // mouth corners
+        cv::Point2f lipTop, lipBot; // inner-lip centres (upper / lower)
+        cv::Point2f browL, browR;   // inner eyebrow ends
+        cv::Point2f lidL, lidR;     // lower-eyelid centres: where tears well up
+        cv::Point2f right, down;    // unit vectors along / across the eye line
+        float yaw = 0.f;            // radians, + => head turned toward image-right
+        float pitch = 0.f;          // radians, + => chin up
+        float open = 0.f;           // 0..1 how far the jaw is open
+        float smile = 0.f;          // 0..1 how much the mouth already grins
     };
 
-    void detectLuma(const cv::Mat& luma);        // refresh faces_ (full-res coords)
-    // Fill `eyesPerFace_` from the eye cascade, run on the shared downscaled
-    // detection image `small` (invScale maps its coords back to full-res).
-    void detectEyes(const cv::Mat& small, double invScale,
-                    const std::vector<cv::Rect>& facesSmall);
-    void applySmile(cv::Mat& frame, const cv::Rect& face);
-    void applyCry(cv::Mat& frame, const cv::Rect& face, double phase);
-    // Draw the smooth 3D pig ears/snout/cheeks over one face, oriented by its
-    // landmarks (or the face box when eyes are unavailable). `phase` drives a
-    // gentle ear wiggle. Coords are roi-local (see applyRegion).
-    void applyPig(cv::Mat& frame, const cv::Rect& face, const FaceEyes& eyes,
-                  double phase) const;
+    // MediaPipe landmarker + the scratch buffers it needs; defined in the .cpp
+    // so the MediaPipe headers stay out of everything that includes this file.
+    struct Landmarker;
 
-    // Rough 0..1 estimate of how open the mouth is, from the contrast of the
-    // central mouth patch (an open mouth = dark cavity next to bright teeth).
-    float mouthOpenness(const cv::Mat& frame, const cv::Rect& face) const;
-    // Brighten the teeth band toward white; stronger the wider the mouth opens.
-    void whitenTeeth(cv::Mat& frame, const cv::Rect& face, float open) const;
+    // Run the landmarker on `src` (CV_8UC1 luma or CV_8UC3 BGR) and rebuild
+    // `faces_` from the mesh it returns. Callers go through updateDetection(),
+    // which owns the model-missing warning.
+    void detect(const cv::Mat& src);
+
+    void applySmile(cv::Mat& frame, const Face& f, cv::Point2f off) const;
+    void applyCry(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;
+    // Draw the smooth 3D pig ears/snout over one face, oriented by its measured
+    // head pose. `phase` drives a gentle ear wiggle.
+    void applyPig(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;
+
+    // Brighten toward white the teeth showing between the lips, given the
+    // mouth's *post-warp* corners and inner-lip centres. Stronger the wider
+    // the grin opens.
+    void whitenTeeth(cv::Mat& frame, cv::Point2f cornerL, cv::Point2f cornerR,
+                     cv::Point2f lipTop, cv::Point2f lipBot, float strength) const;
     // Draw the falling tears of the crying filter.
-    void drawTears(cv::Mat& frame, const cv::Rect& face, double phase) const;
+    void drawTears(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;
 
-    cv::CascadeClassifier face_;
-    cv::CascadeClassifier eyes_;         // for pig-face landmark orientation
-    bool loaded_ = false;
-    bool eyesLoaded_ = false;            // eye cascade available?
-    bool warned_ = false;                // "no cascade" logged only once
-    int frameCount_ = 0;                 // detection runs every few frames
-    std::vector<cv::Rect> faces_;        // last detection result, full-res
-    std::vector<FaceEyes> eyesPerFace_;  // eye landmarks, aligned with faces_
-    // Previous detection's smoothed eyes + face centres, used to low-pass the
-    // jittery eye boxes across detections (matched to new faces by proximity).
-    std::vector<cv::Point2f> prevCentres_;
-    std::vector<FaceEyes> prevEyes_;
+    std::unique_ptr<Landmarker> lm_;
+    bool warned_ = false;     // "no model" logged only once
+    std::vector<Face> faces_; // last detection result, full-res coords
 };
 
-// Try to load the eye Haar cascade that sits next to a given face-cascade path
-// (same directory, "haarcascade_eye.xml"). Exposed for reuse/testing; returns
-// true and fills `out` on success.
-bool loadSiblingEyeCascade(const std::string& faceCascadePath,
-                           cv::CascadeClassifier& out);
+// Search the usual install locations for MediaPipe's `face_landmarker.task`
+// bundle (including the versioned /opt/mediapipe/<ver> layout the
+// media-pipe-builder .deb uses). Returns an empty string when none is found.
+// Exposed for reuse/testing.
+std::string findFaceLandmarkerModel();
 
 // Cycle order for the on-screen filter button: None -> BigSmile -> Crying ->.
 Filter nextFilter(Filter f);
