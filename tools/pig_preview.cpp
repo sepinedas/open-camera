@@ -1,11 +1,14 @@
 // Deterministic preview of the 3D pig-face filter.
 //
-// Renders a simple synthetic head at several roll / turn angles and overlays the
-// pig graphics via FaceFilter::drawPigPreview, writing a contact sheet to
+// Renders a simple synthetic head at several roll / turn angles and overlays
+// the pig graphics via pig3d::render, writing a contact sheet to
 // pig_preview.png. This lets the effect be eyeballed without a camera, and gives
 // the geometry (landmark frame + 3D shading) a quick visual regression check.
 //
-//   g++ -std=c++17 tools/pig_preview.cpp src/filters.cpp
+// It draws straight through pig3d rather than through FaceFilter so the tool
+// needs only OpenCV -- no MediaPipe install, no face model.
+//
+//   g++ -std=c++17 tools/pig_preview.cpp src/pig3d.cpp
 //       $(pkg-config --cflags --libs opencv4) -o /tmp/pig_preview && /tmp/pig_preview
 //
 // Writes to argv[1] if given, else pig_preview.png in the working directory.
@@ -15,7 +18,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 
-#include "../src/filters.hpp"
+#include "../src/pig3d.hpp"
 
 using namespace olc;
 
@@ -65,7 +68,6 @@ Head drawHead(cv::Mat& img, cv::Point2f c, float faceH, float roll, float yaw) {
 
 int main(int argc, char** argv) {
     const char* out = argc > 1 ? argv[1] : "pig_preview.png";
-    FaceFilter ff;
     const int cellW = 300, cellH = 340, cols = 4, rows = 2;
     cv::Mat sheet(cellH * rows, cellW * cols, CV_8UC3, cv::Scalar(60, 60, 60));
 
@@ -86,7 +88,7 @@ int main(int argc, char** argv) {
                           t.yaw);
         cv::Point2f le = t.eyes ? h.leftEye : cv::Point2f(-1, -1);
         cv::Point2f re = t.eyes ? h.rightEye : cv::Point2f(-1, -1);
-        ff.drawPigPreview(cell, h.box, le, re, /*phase=*/0.0);
+        pig3d::render(cell, h.box, t.eyes, le, re, /*phase=*/0.0);
         cv::putText(cell, t.label, {10, 24}, cv::FONT_HERSHEY_SIMPLEX, 0.6,
                     cv::Scalar(30, 30, 30), 2, cv::LINE_AA);
     }

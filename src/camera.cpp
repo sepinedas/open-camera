@@ -1,6 +1,7 @@
 #include "camera.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -14,8 +15,8 @@ constexpr double kMaxZoom = 4.0;
 constexpr double kZoomStep = 1.25; // multiplicative per tap
 
 // Number of CPU threads to hand the software colour converter in the fallback
-// pipeline. The Pi Zero 2 W is quad-core, so a single-threaded videoconvert
-// leaves three cores idle while it becomes the frame-rate bottleneck.
+// pipeline. A single-threaded videoconvert becomes the frame-rate bottleneck
+// while the Pi 5's other three Cortex-A76 cores sit idle.
 int convertThreads() {
     unsigned n = std::thread::hardware_concurrency();
     return static_cast<int>(n == 0 ? 1 : n);
@@ -60,7 +61,9 @@ std::string picamPipelineBGR(const std::string& format, int w, int h,
 // Try one V4L2 index; returns true and leaves `cap` open on success.
 bool tryWebcam(cv::VideoCapture& cap, int index, int w, int h) {
     if (!cap.open(index, cv::CAP_V4L2)) return false;
-    // Prefer MJPG so the modest Pi Zero USB bus can sustain higher resolutions.
+    // Prefer MJPG: even on the Pi 5's USB 3.0 ports, an uncompressed YUYV
+    // stream at 1080p30 eats most of the bus, and most webcams only offer
+    // their higher resolutions over MJPG anyway.
     cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
     cap.set(cv::CAP_PROP_FRAME_WIDTH, w);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, h);
@@ -231,6 +234,43 @@ cv::Mat Camera::nv12CropToBGR(const cv::Mat& nv12, const cv::Rect& r) {
         .copyTo(roi(cv::Rect(0, r.height, r.width, r.height / 2)));
     cv::Mat bgr;
     cv::cvtColor(roi, bgr, cv::COLOR_YUV2BGR_NV12);
+    return bgr;
+}
+
+cv::Mat Camera::nv12ToBGRScaled(const cv::Mat& nv12, int targetW) {
+    if (nv12.empty() || nv12.type() != CV_8UC1 || nv12.rows % 3 != 0)
+        return cv::Mat();
+    const int W = nv12.cols, H = nv12.rows * 2 / 3;
+    if (W < 2 || H < 2 || targetW < 2) return cv::Mat();
+
+    // NV12's 2x2 chroma sampling needs both dimensions even, on the source
+    // plane and on the downscaled one.
+    int w = std::min(targetW, W) & ~1;
+    int h = static_cast<int>(std::lround(static_cast<double>(H) * w / W)) & ~1;
+    if (w < 2 || h < 2) return cv::Mat();
+
+    // The plane-wise path below reinterprets the UV bytes as two channels,
+    // which needs the rows packed. A capture buffer normally is; if this one
+    // is not, fall back to the straightforward (costlier) whole-frame convert.
+    if (!nv12.isContinuous() || W % 2 != 0 || H % 2 != 0) {
+        cv::Mat full, out;
+        cv::cvtColor(nv12, full, cv::COLOR_YUV2BGR_NV12);
+        cv::resize(full, out, cv::Size(w, h), 0, 0, cv::INTER_AREA);
+        return out;
+    }
+
+    cv::Mat small(h * 3 / 2, w, CV_8UC1);
+    cv::Mat dstY = small(cv::Rect(0, 0, w, h));
+    cv::resize(nv12.rowRange(0, H), dstY, cv::Size(w, h), 0, 0, cv::INTER_AREA);
+    // View the interleaved chroma rows as CV_8UC2 so U and V are resized as
+    // separate channels; resizing the raw bytes would blend them into mush.
+    cv::Mat uv = nv12.rowRange(H, H + H / 2).reshape(2, H / 2);
+    cv::Mat uvSmall;
+    cv::resize(uv, uvSmall, cv::Size(w / 2, h / 2), 0, 0, cv::INTER_AREA);
+    uvSmall.reshape(1, h / 2).copyTo(small(cv::Rect(0, h, w, h / 2)));
+
+    cv::Mat bgr;
+    cv::cvtColor(small, bgr, cv::COLOR_YUV2BGR_NV12);
     return bgr;
 }
 

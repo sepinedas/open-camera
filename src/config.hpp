@@ -21,7 +21,7 @@ struct Config {
     bool touchFlipY = false; // mirror touch vertically
     int width = 1280;        // requested preview width
     int height = 720;        // requested preview height
-    std::string faceCascade; // override path to the Haar face cascade XML
+    std::string faceModel;   // override path to the MediaPipe face_landmarker.task
     bool battery = true;     // look for a Waveshare UPS HAT (D) battery gauge
     int batteryBus = 1;      // /dev/i2c-N the HAT sits on
     bool batteryShutdown = false; // power off when the cell reaches the cut-off

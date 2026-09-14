@@ -1,7 +1,7 @@
 # open-lego-camera-cpp
 
-A touch-friendly, **icon-only** camera app for the **Raspberry Pi Zero 2 W**
-(or any Linux box with a webcam), written in **C++17**.
+A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
+(or any Linux box with a webcam), written in **C++20**.
 
 - Works with the **Raspberry Pi camera module** (via libcamera / GStreamer) or
   any **USB webcam** (via V4L2) — auto-detected at startup, or selected
@@ -12,8 +12,8 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi Zero 2 W**
 - Opens on a **welcome screen** with a **camera built from Lego bricks** and two
   big controls: **Start Camera** and **Sleep**. Sleep blanks the screen (and, on
   a Raspberry Pi, powers the panel off via `vcgencmd display_power` to save
-  energy on the Zero 2 W); a **double-tap** on the screen wakes it. In the camera
-  view a **home** button returns to the welcome screen.
+  energy); a **double-tap** on the screen wakes it. In the camera view a
+  **home** button returns to the welcome screen.
 - Fullscreen live preview with a **translucent, auto-hiding menu**: a few
   seconds after your last tap the menu fades away; tap anywhere to bring it
   back.
@@ -42,8 +42,8 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi Zero 2 W**
 - A **Pig Face** filter built from actual **3D models** — mesh ears and a
   protruding snout with two nostrils — rendered through a **perspective camera**
   by a tiny built-in software renderer (z-buffer + shading + anti-aliasing). The
-  head's **pose** (roll / yaw / pitch) is estimated from a small set of
-  **landmarks** — the two eyes plus the face box — so the models **share the
+  head's **pose** (roll / yaw / pitch) is measured from MediaPipe's **478-point
+  face mesh** — irises, nose tip, cheeks and chin — so the models **share the
   face's orientation and perspective**: the snout foreshortens as it turns toward
   you and the ears swing around and occlude behind the head, rather than sitting
   on top like flat stickers. All filters apply live to the preview and to
@@ -65,14 +65,14 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi Zero 2 W**
 | --- | --- |
 | Welcome screen with a Lego-brick camera; Start / Sleep options | `Mode::Welcome` draws `drawLegoCamera` (bricks + lens in `icons.cpp`); Sleep blanks the panel via `vcgencmd display_power` and wakes on a double-tap |
 | Runs with a webcam **or** Pi camera | `Camera` auto-detects: libcamera (GStreamer) first, then V4L2 webcam; force one with `--camera picam` / `--camera webcam` |
-| Written in C++ | C++17, CMake build |
+| Written in C++ | C++20, CMake build |
 | Translucent, auto-hiding menu | `Menu` fades the icon row out ~3.5 s after the last tap; any tap wakes it |
 | Photos, zoom, gallery, delete | shutter / gallery icons; pinch-to-zoom |
 | Icon-only buttons, no text | all icons are drawn as vector shapes (`icons.cpp`, SDL2_gfx) |
 | Headless — no X11 / window manager | SDL2 `kmsdrm`/`fbcon` renders directly to HDMI |
-| WhatsApp-style facial filters | `FaceFilter` finds the face (Haar cascade) and warps the mouth/brows with `cv::remap`; the crying filter also draws tears (`filters.cpp`) |
+| WhatsApp-style facial filters | `FaceFilter` runs MediaPipe's Face Landmarker and warps the real mouth/brow landmarks with `cv::remap`; the crying filter also draws tears (`filters.cpp`) |
 | Battery monitor | `Battery` reads the Waveshare UPS HAT (D)'s INA219 over I²C (`battery.cpp`) and `drawBattery` paints the corner gauge (`icons.cpp`) |
-| Pig-face filter (real 3D models) | `FaceFilter` also finds the eyes (eye Haar cascade); `pig3d` estimates the head pose from those landmarks and rasterises 3D ear/snout meshes through a perspective camera (z-buffer, Gouraud shading, supersampled AA) so they follow the face's orientation and perspective (`pig3d.cpp`) |
+| Pig-face filter (real 3D models) | `FaceFilter` measures head roll/yaw/pitch from the MediaPipe face mesh; `pig3d` rasterises 3D ear/snout meshes through a perspective camera (z-buffer, Gouraud shading, supersampled AA) so they follow the face's orientation and perspective (`pig3d.cpp`) |
 
 ## Dependencies
 
@@ -84,22 +84,46 @@ sudo apt install build-essential cmake pkg-config \
                  libsdl2-dev libsdl2-gfx-dev libopencv-dev
 ```
 
-The **facial filters** need OpenCV's `objdetect` module (part of `libopencv-dev`
-above) and its bundled Haar cascades, which Debian/Raspberry Pi OS ship in the
-`opencv-data` package:
+### MediaPipe (facial filters)
+
+The **facial filters** run **MediaPipe's Face Landmarker** (Tasks Vision C++
+API, CPU/TFLite). Google does not publish a C++ SDK, so the Pi build comes from
+[**media-pipe-builder**](https://github.com/sepinedas/media-pipe-builder), a
+pipeline that compiles MediaPipe for the Pi 5 on 64-bit Raspberry Pi OS
+(aarch64) and publishes a `.deb`. Grab the latest release and install it:
 
 ```sh
-sudo apt install opencv-data
+sudo dpkg -i libmediapipe_*_arm64.deb
 ```
 
-This package provides both the frontal-face cascade and the **eye** cascade
-(`haarcascade_eye.xml`). The pig-face filter uses the eye cascade to track head
-angle; without it the pig still appears but stays upright (no roll/turn
-tracking).
+That installs into `/opt/mediapipe/<ver>` (with `/opt/mediapipe/current`
+pointing at it), registers `libmediapipe_tasks.so` with `ldconfig`, and drops a
+`mediapipe.pc` into the system pkg-config path — which is how this project's
+CMake finds it. Check with:
 
-If the cascade lives somewhere non-standard, point the app at it with
-`--face-cascade /path/to/haarcascade_frontalface_default.xml`. Without a
-cascade the app still runs — the facial filters simply stay inactive.
+```sh
+pkg-config --modversion mediapipe
+```
+
+For a relocatable tarball (or a MediaPipe built by hand) point CMake at the
+install root instead:
+
+```sh
+cmake -B build -DMEDIAPIPE_ROOT=/path/to/mediapipe
+```
+
+MediaPipe's headers are C++20, which is why the whole project is built as C++20.
+They are also developed against Clang; if `g++` chokes on them, configure with
+`-DCMAKE_CXX_COMPILER=clang++`.
+
+That package is built with `-mcpu=cortex-a76`, so like this app it is **Pi 5
+only** — see [Raspberry Pi 5 tuning](#raspberry-pi-5-tuning) below.
+
+The package also ships the model bundle the filters need,
+`face_landmarker.task`, under `share/mediapipe/models/`. The app finds it there
+automatically; point it somewhere else with
+`--face-model /path/to/face_landmarker.task`. Without a model the app still
+runs — the facial filters simply stay inactive.
 
 For the **Pi camera module** you also need the libcamera GStreamer element,
 which is what lets OpenCV open the camera without a desktop:
@@ -111,6 +135,35 @@ sudo apt install gstreamer1.0-libcamera gstreamer1.0-plugins-good \
 
 (A USB webcam needs none of the GStreamer/libcamera packages — it goes
 through V4L2 directly.)
+
+### Raspberry Pi 5 tuning
+
+The build and the filter settings target a **Raspberry Pi 5** (BCM2712,
+Cortex-A76 @ 2.4 GHz) rather than trying to stay portable across every Pi:
+
+| What | Setting | Why |
+| --- | --- | --- |
+| Compiler | `-mcpu=cortex-a76 -O3` | Assumes ARMv8.2-A (dot product, FP16, LSE atomics) instead of generic ARMv8-A. **Not portable** — see below. |
+| Landmark inference | every frame | MediaPipe's VIDEO mode already re-runs the *detector* only when it loses tracking, which is a better throttle than skipping frames — skipping left the warp visibly lagging the face. |
+| Detection image | 640 px wide, in colour | The mesh model crops the face out of this image before resizing to its own input, so a wider image is what lets a small or distant face keep enough detail. Colour beats the grayscale a slower board would settle for. |
+| Faces tracked | up to 4 | Per-face mesh inference is affordable here. |
+| Mouth/brow warp | separable Gaussian | The inner loop used to call `exp()` once per pixel *per control point* — millions per frame with a large face. The Gaussian factorises into a column term and a row term, so it is now width+height evaluations per point instead of width×height. ~28× faster on the warp itself. |
+| Pig-face anti-aliasing | 2×2 supersampling (unchanged) | Left alone deliberately: the limit is memory bandwidth, not arithmetic. At 20 bytes per supersample a large pig already clears ~34 MB/frame; 3×3 would push that past 75 MB/frame — a real slice of the board's ~17 GB/s — for a barely visible gain. |
+
+> **These binaries will not run on a Pi 4, Pi 3 or Zero 2 W.** Those are
+> Cortex-A72/A53 and will fault with `SIGILL`. For a portable build, configure
+> with `-DOLC_TUNE_PI5=OFF` and use a MediaPipe package built with a matching
+> (or generic) `TARGET_MCPU`; the filter settings above stay as they are, so
+> expect a much lower frame rate on older boards.
+
+A Pi 5 also has headroom for a higher capture resolution than the 1280×720
+default — try `--size 1920x1080`. It is not the default because the camera
+pipeline pins the requested size in its caps and has no size fallback: if a
+sensor cannot deliver exactly that geometry, the camera fails to open.
+
+> The KiCad design in [`hardware/`](hardware/) is still a **CM4** carrier
+> board. It has not been retargeted to a CM5, which would need the power stages
+> resized — the CM5 draws substantially more current than a CM4.
 
 ### Pi camera notes (including the IMX500 AI camera)
 
@@ -128,20 +181,25 @@ live preview keeps frames in NV12 all the way to the screen and lets the Pi's
 **GPU** do the YUV→RGB conversion while it draws — via an `SDL_PIXELFORMAT_NV12`
 texture — instead of spending a CPU core on a per-frame `videoconvert`. Pinch
 **zoom** is likewise a GPU crop-and-scale (a texture source rect), not a CPU
-`resize`. The result is a noticeably smoother, lower-latency preview on the Pi
-Zero 2 W, where the CPU colour-convert was the frame-rate bottleneck.
+`resize`. That keeps the preview smooth and low-latency, and leaves the
+Cortex-A76 cores free for the filters rather than burning one on colour
+conversion.
 
 A frame is only converted to BGR on the CPU when something actually needs the
 pixels — taking a photo — so the common "just previewing" case does no colour
 conversion or resize on the CPU at all.
 
-The **facial filters** stay on that fast path too. Face detection runs directly
-on the NV12 **Y (luma) plane** — which _is_ a grayscale image — so it needs no
-conversion, and only the **face region** is converted to BGR, reshaped, and
-re-encoded back into the NV12 frame. The GPU still converts and zooms the whole
-frame, so filtering costs work proportional to the face's size on screen rather
-than a full-frame convert every frame. (A USB webcam, which delivers BGR, still
-converts the whole frame for filters.)
+The **facial filters** stay on that fast path too. Landmark inference gets a
+640 px colour image built by `Camera::nv12ToBGRScaled`, which downscales the
+**Y and the interleaved UV planes separately** and converts only the small
+result — so the full frame is still never colour-converted, and the cost scales
+with the detection size rather than the capture size. Only the **face region**
+is then converted to BGR, reshaped, and re-encoded back into the NV12 frame.
+The GPU still converts and zooms the whole frame, so filtering costs work
+proportional to the face's size on screen rather than a full-frame convert
+every frame. (A USB webcam, which delivers BGR, still converts the whole frame
+for filters.) Inference runs on **every** frame, with MediaPipe in VIDEO mode
+so it only re-runs the face *detector* when it loses tracking.
 
 If the renderer can't sample NV12 textures, or raw NV12 capture won't start, the
 app transparently falls back to converting to BGR with libcamera's
@@ -194,7 +252,7 @@ build/open-lego-camera [options]
   --touch-flip-x / --touch-flip-y   mirror touch on an axis
   --driver NAME                force SDL video driver (kmsdrm, fbcon, x11)
   --windowed                   run in a window instead of fullscreen
-  --face-cascade PATH          Haar face-cascade XML for the facial filters
+  --face-model PATH            MediaPipe face_landmarker.task for the filters
   --no-battery                 skip the Waveshare UPS HAT (D) battery gauge
   --battery-bus N              I2C bus the UPS HAT is on (default: 1)
   --battery-shutdown           power off at the 3.15 V cut-off (off by default)
@@ -210,7 +268,8 @@ you then capture.
 
 - **Big Smile** stretches your mouth's corners up and out into a wide grin and
   opens it vertically; the more you open your mouth, the more your teeth are
-  brightened, so they "pop".
+  brightened, so they "pop". If you are *already* grinning, the pull is eased
+  off so the result does not go rubbery.
 - **Crying** curls your mouth down into a frown, pinches your inner brows down,
   and streams animated tears down your cheeks.
 - **Pig Face** overlays real **3D models** — mesh ears and a protruding snout
@@ -222,26 +281,28 @@ The first two filters *warp your actual face* — no cartoon mouth or eyes are
 pasted on top; only the crying tears are drawn over the image.
 
 **Following the head's orientation and perspective.** The pig is not a flat
-overlay: `pig3d` estimates the head's 3D pose and renders the meshes through a
-perspective camera, so they turn and foreshorten with the head. The pose comes
-from a handful of landmarks rather than the upright detection box:
+overlay: `pig3d` orients the meshes by the head's 3D pose and renders them
+through a perspective camera, so they turn and foreshorten with the head. All
+three angles are measured from the MediaPipe face mesh:
 
-- the **two eyes** (found with the stock eye Haar cascade) give the eye line,
-  which fixes the in-plane **roll** and the **scale** (inter-ocular distance);
-- where the eyes sit inside the **face box** gives a rough left/right **turn**
-  (yaw) and up/down nod (**pitch**).
+- the **iris centres** give the eye line, which fixes the in-plane **roll** and
+  the **scale** (inter-ocular distance);
+- how the **nose tip** divides the ear-to-ear span (the two face-oval extremes)
+  gives the left/right **turn** (yaw) — turning the head slides the nose toward
+  one cheek;
+- where the eye line sits along the **forehead-to-chin** span gives the up/down
+  nod (**pitch**) — nodding foreshortens one half of the face.
 
 From those, a rotation matrix orients every mesh and a perspective projection
 (with a z-buffer for occlusion and supersampling for smooth edges) draws them, so
 the whole rig **rolls, turns, foreshortens and occludes with your head** and does
-not read as a sticker. If the eye cascade is unavailable the pig still draws,
-front-facing, from the face box alone.
+not read as a sticker.
 
-Faces and eyes are found with stock OpenCV Haar cascades and the 3D rendering is
-a small self-contained software rasteriser, so no landmark-regression model,
-`opencv_contrib` build, or GPU is required — keeping it light enough for the Pi
-Zero 2 W. The `tools/pig_preview.cpp` helper renders the pig at several angles
-(the image above) without a camera, for a quick look.
+The 3D rendering is a small self-contained software rasteriser — no GPU
+involved — and MediaPipe's inference is CPU/TFLite, which keeps the whole thing
+comfortable alongside 30 fps preview on a Pi 5. The `tools/pig_preview.cpp`
+helper renders the pig at several angles (the image above) without a camera or
+a model file, for a quick look.
 
 ### Rotating the display
 
