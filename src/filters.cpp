@@ -400,7 +400,7 @@ void FaceFilter::setModel(const std::string& path) {
 // Detection
 // ---------------------------------------------------------------------------
 
-void FaceFilter::detect(const cv::Mat& src) {
+void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
     faces_.clear();
 
     lm_->ts += kFrameIntervalMs;
@@ -408,7 +408,11 @@ void FaceFilter::detect(const cv::Mat& src) {
     // A transient inference failure just means no filtering this frame.
     if (!result.ok()) return;
 
-    const float W = (float)src.cols, H = (float)src.rows;
+    // Landmarks come back normalized to the *detection* image, and everything
+    // downstream (dirtyRegion, applyRegion, the warps) works in frame
+    // coordinates. Scale by the frame, which is not necessarily `src`: callers
+    // on the NV12 path hand over an already-downscaled image.
+    const float W = (float)frameSize.width, H = (float)frameSize.height;
     for (size_t i = 0; i < result->face_landmarks.size(); ++i) {
         const auto& mesh = result->face_landmarks[i].landmarks;
         if ((int)mesh.size() < kMeshMin) continue;
@@ -429,9 +433,12 @@ void FaceFilter::detect(const cv::Mat& src) {
             y0 = std::min(y0, p.y * H);
             y1 = std::max(y1, p.y * H);
         }
+        // Clamp to the frame, not to `src` -- on the NV12 path `src` is the
+        // downscaled detection image, and clamping to it would squeeze every
+        // box into the top-left corner of the frame.
         f.box = cv::Rect(cv::Point((int)std::floor(x0), (int)std::floor(y0)),
                          cv::Point((int)std::ceil(x1), (int)std::ceil(y1))) &
-                cv::Rect(0, 0, src.cols, src.rows);
+                cv::Rect(0, 0, frameSize.width, frameSize.height);
         // Too small to reshape cleanly (matches the old detector's floor).
         if (f.box.width < 40 || f.box.height < 40) continue;
 
@@ -515,9 +522,9 @@ void FaceFilter::apply(cv::Mat& frame, Filter filter, double phase) {
 
 int FaceFilter::detectionWidth() { return (int)kDetectWidth; }
 
-void FaceFilter::updateDetection(const cv::Mat& src) {
-    if (!ready() || src.empty()) {
-        if (!ready() && !warned_) {
+void FaceFilter::updateDetection(const cv::Mat& src, cv::Size frameSize) {
+    if (!ready()) {
+        if (!warned_) {
             std::cerr << "filters: no MediaPipe face model loaded; facial "
                          "filters disabled. Install the MediaPipe package or "
                          "pass --face-model PATH.\n";
@@ -525,7 +532,20 @@ void FaceFilter::updateDetection(const cv::Mat& src) {
         }
         return;
     }
-    detect(src);
+    if (src.empty()) {
+        // The model is loaded but the caller handed over nothing, so the
+        // filters would quietly do nothing on every frame. Say so once rather
+        // than looking like the effect is simply broken.
+        if (!warned_) {
+            std::cerr << "filters: empty detection image; facial filters have "
+                         "nothing to run on (the camera frame could not be "
+                         "converted).\n";
+            warned_ = true;
+        }
+        return;
+    }
+    // An unset frameSize means `src` is the full-resolution frame.
+    detect(src, frameSize.area() > 0 ? frameSize : src.size());
 }
 
 cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {

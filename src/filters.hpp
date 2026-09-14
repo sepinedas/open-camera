@@ -71,7 +71,13 @@ public:
     // `src` may be any size -- it is downscaled to detectionWidth() internally
     // -- but a caller that can produce the detection image cheaply (see
     // Camera::nv12ToBGRScaled) should pre-scale it to exactly that width.
-    void updateDetection(const cv::Mat& src);
+    //
+    // A caller that pre-scales MUST pass `frameSize`: landmarks come back
+    // normalized and are multiplied up into frame coordinates, so without it
+    // they would be scaled to the detection image instead and every face box
+    // would land at the wrong size in the wrong place. Leave it empty only
+    // when `src` *is* the full-resolution frame.
+    void updateDetection(const cv::Mat& src, cv::Size frameSize = cv::Size());
 
     // Width the detection image is scaled to before inference. Landmarks come
     // back normalized, so this never affects the coordinates -- only how much
@@ -121,9 +127,9 @@ private:
     struct Landmarker;
 
     // Run the landmarker on `src` (CV_8UC1 luma or CV_8UC3 BGR) and rebuild
-    // `faces_` from the mesh it returns. Callers go through updateDetection(),
-    // which owns the model-missing warning.
-    void detect(const cv::Mat& src);
+    // `faces_` from the mesh it returns, in `frameSize` coordinates. Callers go
+    // through updateDetection(), which owns the model-missing warning.
+    void detect(const cv::Mat& src, cv::Size frameSize);
 
     void applySmile(cv::Mat& frame, const Face& f, cv::Point2f off) const;
     void applyCry(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;

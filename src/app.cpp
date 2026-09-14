@@ -999,8 +999,12 @@ void App::renderCamera() {
 // to the face, not to the frame.
 void App::renderFilteredNV12() {
     const int W = cam_->width(), H = cam_->height();
+    // The detection image is pre-scaled, so the frame size has to be passed
+    // explicitly -- landmarks are normalized and get multiplied up into frame
+    // coordinates.
     faceFilter_.updateDetection(
-        Camera::nv12ToBGRScaled(lastNative_, FaceFilter::detectionWidth()));
+        Camera::nv12ToBGRScaled(lastNative_, FaceFilter::detectionWidth()),
+        cv::Size(W, H));
     cv::Rect region = faceFilter_.dirtyRegion(filter_, W, H);
 
     clear();
