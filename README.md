@@ -77,7 +77,7 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
 ## Dependencies
 
 Install the development libraries (names are for Raspberry Pi OS / Debian
-Bookworm):
+Trixie):
 
 ```sh
 sudo apt install build-essential cmake pkg-config \
@@ -96,7 +96,22 @@ pipeline that compiles MediaPipe for the Pi 5 on 64-bit Raspberry Pi OS
 sudo dpkg -i libmediapipe_*_arm64.deb
 ```
 
-That installs into `/opt/mediapipe/<ver>` (with `/opt/mediapipe/current`
+The package **must be built for the same Debian release your Pi runs**. It
+links OpenCV by soname, and Raspberry Pi OS has moved: Trixie carries OpenCV
+4.10 (`libopencv_core.so.410`), Bookworm 4.6 (`.so.406`). A package built on
+the wrong one installs (older releases) or is refused by apt (current ones),
+and if it does install the app dies at startup with `error while loading
+shared libraries: libopencv_core.so.406`. Installing both OpenCV versions is
+not a fix — `cv::Mat` is passed across the MediaPipe boundary, so two OpenCV
+ABIs in one process is undefined behaviour. Check yours with:
+
+```sh
+. /etc/os-release && echo "$PRETTY_NAME"
+```
+
+and build the MediaPipe package with a matching `debian_suite`.
+
+Installing puts MediaPipe in `/opt/mediapipe/<ver>` (with `/opt/mediapipe/current`
 pointing at it), registers `libmediapipe_tasks.so` with `ldconfig`, and drops a
 `mediapipe.pc` into the system pkg-config path — which is how this project's
 CMake finds it. Check with:
@@ -526,7 +541,7 @@ deliberately, force it in `cmdline.txt` with `video=HDMI-A-1:1920x1080@60`
 
 The HyperPixel 4.0" rectangular is an **800×480 DPI panel** (parallel RGB over
 the GPIO header) with an **I²C capacitive touch** controller — not HDMI and not
-DSI. On a current Raspberry Pi OS (Bookworm, `vc4-kms-v3d`) it comes up as a
+DSI. On a current Raspberry Pi OS (`vc4-kms-v3d`) it comes up as a
 normal **DRM/KMS** output, so this app drives it through the same `kmsdrm` path
 — you just need to enable the panel and align the touch.
 
