@@ -34,7 +34,11 @@ namespace olc {
 //     guessed from the contrast of a mouth-shaped patch;
 //   * head roll/yaw/pitch for the pig are measured from the eye, nose, cheek
 //     and chin landmarks instead of from where a pair of eye boxes happen to
-//     sit inside a face box.
+//     sit inside a face box;
+//   * and the pig's *proportions* come from the face it is drawn on -- the
+//     snout is placed and sized from the real nose, the ears from the real
+//     temples and crown -- rather than being a fixed mask scaled by eye
+//     distance.
 //
 // The MediaPipe model bundle (`face_landmarker.task`) is found in the usual
 // install locations, or pointed at explicitly with `--face-model`.
@@ -120,6 +124,15 @@ private:
         float pitch = 0.f;          // radians, + => chin up
         float open = 0.f;           // 0..1 how far the jaw is open
         float smile = 0.f;          // 0..1 how much the mouth already grins
+        // Where this face's features actually sit, in eye-separation units in
+        // the head's frame (+ is down from the eye midpoint). These drive the
+        // pig's snout and ear placement so the rig matches the face in front
+        // of it rather than assuming average proportions. Kept as plain floats
+        // so filters.hpp does not have to pull in pig3d.hpp.
+        float noseY = 0.32f;        // nose tip, below the eye line
+        float noseHalfW = 0.28f;    // half the alar (nostril) width
+        float crownY = -0.90f;      // top of the head, above the eye line
+        float headHalfW = 1.22f;    // half the head width at the temples
     };
 
     // MediaPipe landmarker + the scratch buffers it needs; defined in the .cpp
@@ -148,6 +161,10 @@ private:
     std::unique_ptr<Landmarker> lm_;
     bool warned_ = false;     // "no model" logged only once
     std::vector<Face> faces_; // last detection result, full-res coords
+    // Previous frame's measured proportions, indexed the same way as faces_.
+    // Anatomy does not change, so these are low-pass filtered across frames to
+    // keep landmark jitter from making the snout pulse.
+    std::vector<Face> prevFaces_;
 };
 
 // Search the usual install locations for MediaPipe's `face_landmarker.task`

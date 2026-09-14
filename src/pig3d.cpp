@@ -89,28 +89,57 @@ void basis(const Vec3f& axis, Vec3f& u, Vec3f& v) {
     v = norm(axis.cross(u));  // roughly head-up/down
 }
 
+// Where the snout sits and how big it is, derived from the measured nose so
+// the tube lands *on* the nose instead of at a fixed spot on the face. The
+// front pad is centred on the nose tip: `base` is pulled back along the axis by
+// the snout's length so protruding forward puts the pad there. Shared with
+// buildNostrils so the holes cannot drift off the pad.
+struct SnoutFrame {
+    Vec3f base, axis, u, v, padCentre;
+    float len, rx, ry;
+};
+
+SnoutFrame snoutFrame(const Proportions& p) {
+    SnoutFrame s;
+    s.axis = norm(Vec3f(0.f, 0.12f, -1.f)); // mostly forward, a touch down
+    s.len = 0.50f;
+    // A pig's snout is chunkier than the human nose underneath it; scale the
+    // measured alar half-width up rather than inventing an absolute size.
+    s.rx = 1.50f * p.noseHalfW;
+    s.ry = 0.83f * s.rx; // wider than tall, as before (0.35/0.42)
+    // The base sits on the face at the measured nose height and the tube
+    // protrudes forward from there, so the pad ends up just in front of and
+    // just below the nose -- where a snout actually is. (Pinning the *pad* to
+    // the nose instead would push the base back behind the eye plane and bury
+    // most of the snout inside the head.)
+    s.base = Vec3f(0.f, p.noseY, -0.28f);
+    s.padCentre = s.base + s.axis * s.len;
+    basis(s.axis, s.u, s.v);
+    return s;
+}
+
 // The snout: an elliptical tube protruding forward (-Z) from the face, capped by
 // a domed front pad. Wider than tall, flaring slightly toward the front.
-Mesh buildSnout() {
+Mesh buildSnout(const Proportions& prop) {
     Mesh m;
     m.ambient = 0.42f;
     m.spec = 0.26f;
     m.shin = 18.f;
     const Vec3f pink(168, 152, 236);
-    const Vec3f base(0.f, 0.32f, -0.28f);       // sits low on the face, forward
-    const Vec3f axis = norm(Vec3f(0.f, 0.12f, -1.f)); // mostly forward, a touch down
-    const float len = 0.50f;
+    const SnoutFrame sf = snoutFrame(prop);
+    const Vec3f base = sf.base;
+    const Vec3f axis = sf.axis;
+    const float len = sf.len;
     const int nSeg = 26, nRing = 4;
-    Vec3f u, v;
-    basis(axis, u, v);
+    const Vec3f u = sf.u, v = sf.v;
 
     // Rings from the face out to the front.
     std::vector<std::vector<int>> ring(nRing);
     for (int r = 0; r < nRing; ++r) {
         float t = (float)r / (nRing - 1);
         Vec3f c = base + axis * (t * len);
-        float rx = 0.42f * (1.f + 0.14f * t); // flare forward
-        float ry = 0.35f * (1.f + 0.12f * t);
+        float rx = sf.rx * (1.f + 0.14f * t); // flare forward
+        float ry = sf.ry * (1.f + 0.12f * t);
         for (int i = 0; i < nSeg; ++i) {
             float a = 2.f * kPi * i / nSeg;
             Vec3f p = c + u * (rx * std::cos(a)) + v * (ry * std::sin(a));
@@ -128,7 +157,7 @@ Mesh buildSnout() {
     // toward the camera (its z is negative), so adding it bulges the pad OUT.
     const Vec3f pad(184, 168, 243);
     Vec3f fc = base + axis * len;
-    float frx = 0.42f * 1.14f, fry = 0.35f * 1.12f;
+    float frx = sf.rx * 1.14f, fry = sf.ry * 1.12f;
     int centre = m.add(fc + axis * 0.07f, pad); // dome bulging toward camera
     std::vector<int> fringe;
     for (int i = 0; i < nSeg; ++i) {
@@ -144,27 +173,27 @@ Mesh buildSnout() {
 }
 
 // Two nostrils: small dark domes recessed into the snout's front pad.
-Mesh buildNostrils() {
+Mesh buildNostrils(const Proportions& prop) {
     Mesh m;
     m.doubleSided = true; // tiny discs; skip culling so winding never hides them
     m.ambient = 0.34f;
     m.spec = 0.05f;
     m.shin = 20.f;
     const Vec3f dark(40, 32, 70);
-    const Vec3f base(0.f, 0.32f, -0.28f);
-    const Vec3f axis = norm(Vec3f(0.f, 0.12f, -1.f));
-    const float len = 0.50f;
-    Vec3f u, v; // u ~ head-right (image), v ~ head-down (image)
-    basis(axis, u, v);
-    Vec3f fc = base + axis * len;
+    // Same frame as the snout -- these used to repeat its constants, so any
+    // change to the snout silently left the nostrils behind.
+    const SnoutFrame sf = snoutFrame(prop);
+    const Vec3f axis = sf.axis;
+    const Vec3f u = sf.u, v = sf.v; // u ~ head-right (image), v ~ head-down
+    const Vec3f fc = sf.padCentre;
 
     const int nSeg = 16;
     for (float side : {-1.f, 1.f}) {
         // Two prominent holes near the centre of the domed pad, sitting just in
         // front of it so they win the z-test; slanted outward as a pig's are.
         // (+axis moves toward the camera; +v is downward.)
-        Vec3f c = fc + u * (0.16f * side) + v * 0.015f + axis * 0.09f;
-        float rx = 0.10f, ry = 0.15f;
+        Vec3f c = fc + u * (0.38f * sf.rx * side) + v * 0.015f + axis * 0.09f;
+        float rx = 0.24f * sf.rx, ry = 0.43f * sf.ry;
         float ca = std::cos(side * 0.28f), sa = std::sin(side * 0.28f);
         int centre = m.add(c + axis * 0.02f, dark);
         std::vector<int> fr;
@@ -193,7 +222,7 @@ Mesh buildNostrils() {
 // (A..B) toward the tip C, so it is wide along the crown and narrows to the tip.
 // A gentle mid-surface bulge plus a slight forward curl of the tip give it body,
 // and the lower-inner region is tinted a deeper pink for the ear's hollow.
-Mesh buildEar(float side, float wiggle) {
+Mesh buildEar(float side, float wiggle, const Proportions& prop) {
     Mesh m;
     m.doubleSided = true;
     m.ambient = 0.38f;
@@ -206,9 +235,15 @@ Mesh buildEar(float side, float wiggle) {
     // A wide, roughly horizontal top edge (A..B) along the crown, dropping to a
     // soft tip C low on the outer side -> a big triangular flap draped over the
     // side of the head, clear of the (more medial) eye.
-    const Vec3f A(side * 0.38f, -0.90f, -0.10f); // inner-top, near the crown
-    const Vec3f B(side * 1.22f, -0.82f, -0.02f); // outer-top attachment (wide)
-    const Vec3f C(side * 1.02f, 0.04f, -0.32f);  // drooping outer-lower tip
+    // Anchored to the measured head rather than to fixed offsets: B sits at the
+    // temple, so the ear attaches at the real silhouette edge, and the crown
+    // height sets how high up the flap starts. The inner/outer and vertical
+    // ratios that give the ear its shape are preserved from the original rig.
+    const float hw = prop.headHalfW;
+    const float cy = prop.crownY;
+    const Vec3f A(side * 0.31f * hw, cy, -0.10f);        // inner-top, near the crown
+    const Vec3f B(side * hw, cy + 0.08f, -0.02f);        // outer-top attachment
+    const Vec3f C(side * 0.84f * hw, cy + 0.94f, -0.32f); // drooping outer tip
     Vec3f Nrm = norm((B - A).cross(C - A));       // flap plane normal
     if (Nrm[2] > 0.f) Nrm = -Nrm;                 // face the camera
     const float bulge = 0.17f, tipCurl = 0.16f;
@@ -420,10 +455,10 @@ void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase
 
     float wig = 0.05f * std::sin((float)phase * 0.11f);
     std::vector<Mesh> meshes;
-    meshes.push_back(buildEar(-1.f, wig));
-    meshes.push_back(buildEar(+1.f, wig));
-    meshes.push_back(buildSnout());
-    meshes.push_back(buildNostrils());
+    meshes.push_back(buildEar(-1.f, wig, head.prop));
+    meshes.push_back(buildEar(+1.f, wig, head.prop));
+    meshes.push_back(buildSnout(head.prop));
+    meshes.push_back(buildNostrils(head.prop));
 
     // Image-space bounding box of every projected vertex -> the region we touch.
     float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;

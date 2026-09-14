@@ -60,6 +60,8 @@ constexpr int kMouthR = 61, kMouthL = 291;  // mouth corners
 constexpr int kLipInnerTop = 13, kLipInnerBot = 14;
 constexpr int kBrowInnerR = 107, kBrowInnerL = 336;
 constexpr int kIrisR = 468, kIrisL = 473;
+constexpr int kAlarR = 48, kAlarL = 278;     // nose wings -> snout width
+constexpr int kTempleR = 127, kTempleL = 356; // head sides -> ear attachment
 constexpr int kEyeROuter = 33, kEyeRInner = 133, kEyeRUp = 159, kEyeRLow = 145;
 constexpr int kEyeLOuter = 263, kEyeLInner = 362, kEyeLUp = 386, kEyeLLow = 374;
 // Size of the base topology. Every index above lives inside it (the highest is
@@ -74,6 +76,33 @@ constexpr float kYawGain = 1.5f;
 constexpr float kPitchGain = 3.5f;
 // Where the eye line sits between the forehead and the chin on a level head.
 constexpr float kNeutralEyeT = 0.42f;
+
+// Plausible bounds for the measured facial proportions the pig is built from,
+// in eye-separation units. A blown landmark (or an extreme pose the
+// foreshortening correction cannot undo) should nudge the rig, never deform
+// it, so every measurement is clamped into human range.
+constexpr float kNoseYMin = 0.40f, kNoseYMax = 0.95f;
+constexpr float kNoseHalfWMin = 0.15f, kNoseHalfWMax = 0.50f;
+constexpr float kCrownYMin = -1.40f, kCrownYMax = -0.45f;
+constexpr float kHeadHalfWMin = 0.80f, kHeadHalfWMax = 1.80f;
+// Weight of the new measurement when blending with the previous frame's.
+// Anatomy is constant, so this only needs to track a face arriving or moving.
+constexpr float kPropBlend = 0.25f;
+
+// Turning or nodding foreshortens the face, and a simple cos() correction is
+// not enough for a feature that *protrudes*: pitching the head rotates the
+// nose's depth into its projected height, so at 20 degrees of nod the nose
+// reads ~20% too low on the face. Correcting properly needs the feature's
+// depth-to-height ratio in the head frame, which for a given landmark is
+// near-constant across faces. These are measured off the canonical face model:
+// the nose tip stands well forward of the eye plane, the forehead barely.
+constexpr float kNoseDepthRatio = -0.54f;
+constexpr float kCrownDepthRatio = 0.06f;
+// Past these angles the small-rotation model behind that correction breaks
+// down (at 45 degrees of yaw it is ~27% out), so the proportions simply hold
+// their last good value -- anatomy does not change while you turn your head.
+constexpr float kMeasureMaxYaw = 0.55f;   // ~31 degrees
+constexpr float kMeasureMaxPitch = 0.45f; // ~26 degrees
 
 // Where a packaged Face Landmarker bundle is looked for, in order. The
 // media-pipe-builder .deb installs under a versioned /opt/mediapipe/<ver> and
@@ -497,6 +526,59 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
             f.pitch = clampf(kPitchGain * (kNeutralEyeT - t), -0.6f, 0.6f);
         }
 
+        // --- Facial proportions the pig rig is built from --------------
+        // Carry the previous frame's values forward by default: these describe
+        // anatomy, so holding a good measurement beats taking a bad one.
+        const bool hadPrev = (i < prevFaces_.size());
+        if (hadPrev) {
+            const Face& q = prevFaces_[i];
+            f.noseY = q.noseY;
+            f.noseHalfW = q.noseHalfW;
+            f.crownY = q.crownY;
+            f.headHalfW = q.headHalfW;
+        }
+
+        // Only re-measure while the head is close enough to frontal for the
+        // foreshortening correction to hold.
+        if (std::fabs(f.yaw) <= kMeasureMaxYaw &&
+            std::fabs(f.pitch) <= kMeasureMaxPitch) {
+            const float invEye = 1.f / eyeSep;
+            const auto [alarL, alarR] = ordered(P(kAlarR), P(kAlarL));
+            const auto [templeL, templeR] = ordered(P(kTempleR), P(kTempleL));
+            const cv::Point2f eyeMid = (f.eyeL + f.eyeR) * 0.5f;
+
+            // A width measured against eyeSep needs no correction at all: both
+            // foreshorten by cos(yaw), so it cancels. A height does not, and
+            // also has to undo the feature's own depth rotating into view.
+            auto height = [&](cv::Point2f pt, float depthRatio) {
+                const float raw = dot(pt - eyeMid, f.down) * invEye;
+                const float den = std::max(0.4f, std::cos(f.pitch) -
+                                                     std::sin(f.pitch) * depthRatio);
+                return raw * std::cos(f.yaw) / den;
+            };
+
+            const float mNoseHalfW =
+                clampf(0.5f * std::fabs(dot(alarR - alarL, f.right)) * invEye,
+                       kNoseHalfWMin, kNoseHalfWMax);
+            const float mHeadHalfW =
+                clampf(0.5f * std::fabs(dot(templeR - templeL, f.right)) * invEye,
+                       kHeadHalfWMin, kHeadHalfWMax);
+            const float mNoseY =
+                clampf(height(nose, kNoseDepthRatio), kNoseYMin, kNoseYMax);
+            const float mCrownY =
+                clampf(height(fore, kCrownDepthRatio), kCrownYMin, kCrownYMax);
+
+            // Low-pass against the previous frame's same slot; MediaPipe's
+            // VIDEO mode keeps face order stable, so index matching is enough.
+            // A face seen for the first time takes its measurement outright
+            // rather than easing away from the generic defaults.
+            const float a = hadPrev ? kPropBlend : 1.f;
+            f.noseHalfW += (mNoseHalfW - f.noseHalfW) * a;
+            f.headHalfW += (mHeadHalfW - f.headHalfW) * a;
+            f.noseY += (mNoseY - f.noseY) * a;
+            f.crownY += (mCrownY - f.crownY) * a;
+        }
+
         // Expression. The blendshape head reads the mouth straight off the
         // mesh; without it, fall back to the inner-lip gap.
         float jaw = blendshape(*result, i, "jawOpen");
@@ -511,6 +593,7 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
 
         faces_.push_back(std::move(f));
     }
+    prevFaces_ = faces_;
 }
 
 void FaceFilter::apply(cv::Mat& frame, Filter filter, double phase) {
@@ -741,6 +824,10 @@ void FaceFilter::applyPig(cv::Mat& frame, const Face& f, cv::Point2f off,
     head.hasPose = true;
     head.yaw = f.yaw;
     head.pitch = f.pitch;
+    head.prop.noseY = f.noseY;
+    head.prop.noseHalfW = f.noseHalfW;
+    head.prop.crownY = f.crownY;
+    head.prop.headHalfW = f.headHalfW;
     const cv::Rect box(f.box.x - (int)off.x, f.box.y - (int)off.y, f.box.width,
                        f.box.height);
     pig3d::render(frame, box, head, phase);

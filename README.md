@@ -313,6 +313,26 @@ From those, a rotation matrix orients every mesh and a perspective projection
 the whole rig **rolls, turns, foreshortens and occludes with your head** and does
 not read as a sticker.
 
+**Fitted to your face, not just aimed at it.** The meshes are also *built* from
+the mesh rather than at fixed proportions, so the pig matches the face it is
+drawn on:
+
+- the **snout** sits at your measured nose height and is sized from your alar
+  (nostril) width — previously it was pinned 0.32 eye-separations below the eye
+  line, but a real nose tip is nearer 0.65, which is why the snout used to ride
+  high on the bridge;
+- the **nostrils** are derived from the snout's own frame, so they cannot drift
+  off the pad when it moves or resizes;
+- the **ears** attach at your measured temples and crown, so they sit on the
+  silhouette of a narrow or a wide head instead of always the same width.
+
+Those proportions describe anatomy, so they are low-pass filtered across frames
+and only re-measured while your head is within ~30° of frontal. Beyond that,
+foreshortening corrupts the measurement faster than it can be corrected — a
+protruding feature like the nose rotates its *depth* into its apparent height —
+so the rig simply holds the last good values. Every measurement is clamped to a
+human range, so a blown landmark nudges the pig rather than deforming it.
+
 The 3D rendering is a small self-contained software rasteriser — no GPU
 involved — and MediaPipe's inference is CPU/TFLite, which keeps the whole thing
 comfortable alongside 30 fps preview on a Pi 5. The `tools/pig_preview.cpp`
