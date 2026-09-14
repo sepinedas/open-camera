@@ -17,4 +17,11 @@ void drawIcon(SDL_Renderer* ren, Action action, int cx, int cy, int r,
 // whole graphic scales with it); `alpha` fades it in/out as one.
 void drawLegoCamera(SDL_Renderer* ren, int cx, int cy, double unit, Uint8 alpha);
 
+// Draws a battery gauge whose whole glyph (body plus terminal nub) occupies the
+// rect (x, y, w, h). The fill is `percent` of the body and is colour-coded by
+// level -- green, amber, then red -- or blue with a lightning bolt while
+// `charging`. `alpha` fades it like the icons above.
+void drawBattery(SDL_Renderer* ren, int x, int y, int w, int h, int percent,
+                 bool charging, Uint8 alpha);
+
 } // namespace olc

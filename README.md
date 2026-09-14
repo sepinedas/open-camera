@@ -25,6 +25,11 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi Zero 2 W**
   factor (e.g. `2.0x`) shows briefly while zooming.
 - A **shutter-flash animation** plays when a photo is taken, and the **gallery
   button shows a thumbnail** of the most recent capture.
+- A **battery monitor** for the **Waveshare UPS HAT (D)**: the app reads the
+  HAT's INA219 over I²C and shows a **gauge in the top-right corner** — level,
+  percentage, a **bolt while charging**, and a pulsing red **LOW BATTERY**
+  warning when the cell is nearly flat. Auto-detected; the app runs exactly as
+  before when no HAT is fitted.
 - Built-in **gallery**: browse captured photos, **play** back any videos
   already on disk, and **delete** items behind an icon-only ✓ / ✗ confirmation.
   The capture **date & time** is shown translucent across the top.
@@ -66,6 +71,7 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi Zero 2 W**
 | Icon-only buttons, no text | all icons are drawn as vector shapes (`icons.cpp`, SDL2_gfx) |
 | Headless — no X11 / window manager | SDL2 `kmsdrm`/`fbcon` renders directly to HDMI |
 | WhatsApp-style facial filters | `FaceFilter` finds the face (Haar cascade) and warps the mouth/brows with `cv::remap`; the crying filter also draws tears (`filters.cpp`) |
+| Battery monitor | `Battery` reads the Waveshare UPS HAT (D)'s INA219 over I²C (`battery.cpp`) and `drawBattery` paints the corner gauge (`icons.cpp`) |
 | Pig-face filter (real 3D models) | `FaceFilter` also finds the eyes (eye Haar cascade); `pig3d` estimates the head pose from those landmarks and rasterises 3D ear/snout meshes through a perspective camera (z-buffer, Gouraud shading, supersampled AA) so they follow the face's orientation and perspective (`pig3d.cpp`) |
 
 ## Dependencies
@@ -189,6 +195,9 @@ build/open-lego-camera [options]
   --driver NAME                force SDL video driver (kmsdrm, fbcon, x11)
   --windowed                   run in a window instead of fullscreen
   --face-cascade PATH          Haar face-cascade XML for the facial filters
+  --no-battery                 skip the Waveshare UPS HAT (D) battery gauge
+  --battery-bus N              I2C bus the UPS HAT is on (default: 1)
+  --battery-shutdown           power off at the 3.15 V cut-off (off by default)
   --help                       show this help
 ```
 
@@ -275,6 +284,58 @@ still turns the whole UI on top.
   and quits from the welcome screen. Any key wakes the screen from sleep.
 - `--windowed` is handy when developing on a desktop (the app then uses the
   desktop's SDL driver automatically).
+
+## Battery monitor (Waveshare UPS HAT (D))
+
+With a [Waveshare UPS HAT (D)](https://www.waveshare.com/wiki/UPS_HAT_(D)) on
+the Pi's 40-pin header, the app shows a **battery gauge in the top-right
+corner** of the welcome, camera and gallery screens:
+
+| Gauge | Meaning |
+| --- | --- |
+| green / amber / red fill + `NN%` | charge level (>50% / >20% / below) |
+| blue fill with a **lightning bolt** | the cell is taking charge |
+| pulsing red + `LOW BATTERY` | at or below 15%, off charge |
+
+Nothing needs to be passed on the command line: at startup the app looks for the
+HAT's **INA219** at `0x43` on `/dev/i2c-1` and simply runs without a gauge if
+nothing answers. Two things have to be true on the Pi first:
+
+```sh
+# 1. I2C enabled -- add to /boot/firmware/config.txt (or use raspi-config), then reboot
+dtparam=i2c_arm=on
+
+# 2. your user allowed to use it (log out and back in afterwards)
+sudo usermod -aG i2c "$USER"
+
+# check the HAT is answering: 43 (gauge) and 2d (power-path MCU) should appear
+i2cdetect -y 1
+```
+
+The register map, calibration (0.01 Ω shunt, 16 V / 5 A profile) and the
+state-of-charge curve all follow Waveshare's own reference driver for this
+board, so the readings match its `INA219.py` demo. Note that the percentage is
+**estimated from the cell's terminal voltage** (3.0 V empty → 4.2 V full), not
+counted in coulombs, so it sags under a heavy load and recovers when the load
+drops; the app smooths it so the number doesn't flicker. The `(B)` and `(C)`
+HATs use different shunts and calibration values and are *not* interchangeable
+with this code.
+
+Useful flags:
+
+- `--battery-bus N` — the HAT is on a bus other than `/dev/i2c-1`.
+- `--no-battery` — skip the probe entirely.
+- `--battery-shutdown` — **opt-in**: when the cell stays below the HAT's
+  **3.15 V cut-off** for a minute while off charge, show `BATTERY EMPTY`, ask
+  the HAT's MCU to power the Pi back up by itself once the cell recovers
+  (register `0x01` ← `0x55` at `0x2d`), then halt. Without this flag the app
+  only ever *reports* the level. The shutdown runs `sudo -n poweroff`, so it
+  needs passwordless sudo (the default for the `pi` user) or root.
+
+> The KiCad [CM4 carrier board](hardware/README.md) in this repo takes a
+> different route — an on-board **MAX17048** fuel gauge — which this code does
+> not read. The UPS HAT above is the off-the-shelf option for a normal
+> 40-pin Pi.
 
 ## Headless HDMI (no desktop)
 
@@ -498,9 +559,9 @@ top while you pinch.
 ## Design notes
 
 - **Modules** (`src/`): `camera` (dual backend + digital zoom), `gallery`
-  (list/navigate/delete), `icons` (procedural vector icons), `ui` (auto-hide
-  menu, layout, hit-testing), `app` (SDL display, event loop, per-mode
-  rendering), `config` (CLI).
+  (list/navigate/delete), `battery` (UPS HAT (D) INA219 over I²C), `icons`
+  (procedural vector icons), `ui` (auto-hide menu, layout, hit-testing), `app`
+  (SDL display, event loop, per-mode rendering), `config` (CLI).
 - **Zoom** is a uniform centre-crop-and-rescale applied to both preview and
   captures, so behaviour is identical on the Pi camera and a webcam.
 - **Rendering**: each frame is uploaded to a streaming SDL texture and scaled to

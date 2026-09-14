@@ -7,6 +7,7 @@
 #include <SDL2/SDL.h>
 #include <opencv2/core.hpp>
 
+#include "battery.hpp"
 #include "camera.hpp"
 #include "config.hpp"
 #include "filters.hpp"
@@ -65,6 +66,13 @@ private:
     void drawText(int x, int topY, const std::string& s, int scale,
                   SDL_Color c, bool center);
     void drawGalleryButton(const Button& b, Uint8 alpha); // last-shot thumbnail
+    // Battery gauge + percentage in the top-right corner, drawn on every screen
+    // that shows content. No-op without a UPS HAT. It pulses red and grows a
+    // LOW BATTERY label once the pack is nearly flat.
+    void drawBatteryBadge();
+    // Act on a sustained low-battery reading (only with --battery-shutdown):
+    // tell the HAT to power back up when charged, then halt the Pi.
+    void powerOffLowBattery();
     void refreshThumbnail();                              // rebuild after a capture
     void dispatch(Action a);
 
@@ -93,6 +101,7 @@ private:
     Config cfg_;
     std::unique_ptr<Camera> cam_;
     std::unique_ptr<Gallery> gallery_;
+    std::unique_ptr<Battery> battery_; // null when no UPS HAT (D) is fitted
     Menu menu_;
     FaceFilter faceFilter_;
 

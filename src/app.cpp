@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <dirent.h>
 #include <iostream>
@@ -319,6 +320,74 @@ static std::string captureTime(const std::string& path) {
     return "";
 }
 
+// Battery gauge in the top-right corner: the glyph, the percentage beside it,
+// and -- once the pack is nearly flat and off charge -- a pulsing red LOW
+// BATTERY warning. Drawn after everything else so it stays readable over a
+// bright preview.
+void App::drawBatteryBadge() {
+    if (!battery_) return;
+    const BatteryStatus& b = battery_->status();
+    if (!b.valid) return;
+
+    // Roughly the 3.15 V cut-off the HAT shuts down at, expressed as a level.
+    constexpr int kLowPercent = 15;
+    const bool low = !b.charging && b.percent <= kLowPercent;
+
+    // Pulse the whole badge while low: it catches the eye without stealing the
+    // screen from whatever the camera is pointed at.
+    Uint8 a = 235;
+    if (low) {
+        double t = (SDL_GetTicks() % 1400) / 1400.0;
+        double tri = (t < 0.5) ? t * 2.0 : (1.0 - t) * 2.0; // 0 -> 1 -> 0
+        a = (Uint8)std::lround(120.0 + 135.0 * tri);
+    }
+
+    int h = std::max(12, viewH_ / 26);
+    int w = (int)std::lround(h * 2.1);
+    int m = std::max(8, viewH_ / 48);
+    int x = viewW_ - m - w, y = m;
+    drawBattery(ren_, x, y, w, h, b.percent, b.charging, a);
+
+    SDL_Color c = low ? SDL_Color{255, 120, 110, a} : SDL_Color{255, 255, 255, a};
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%d%%", b.percent);
+    int scale = std::max(1, h / 10);
+    int tw = 8 * (int)std::strlen(buf) * scale;
+    drawText(x - 8 - tw, y + (h - 8 * scale) / 2, buf, scale, c, false);
+
+    if (!low) return;
+    const std::string warn = "LOW BATTERY";
+    int wscale = std::max(1, std::min(scale, 2));
+    int wx = viewW_ - m - 8 * (int)warn.size() * wscale;
+    drawText(wx, y + h + 6, warn, wscale, c, false);
+}
+
+// The cell has been under the cut-off, off charge, for a full minute. Leave the
+// HAT armed to boot the Pi again once it has charge, then halt cleanly rather
+// than letting the pack run down into its own protection cut-off.
+void App::powerOffLowBattery() {
+    std::cerr << "battery: cell is flat (" << battery_->status().volts
+              << " V); shutting down\n";
+    if (!battery_->armAutoRestart())
+        std::cerr << "battery: UPS HAT MCU (0x2d) did not answer; it will need "
+                     "a button press to power up again\n";
+
+    // Tell whoever is watching the screen why it is going dark.
+    beginFrame();
+    clear();
+    int scale = std::max(2, viewH_ / 120);
+    drawText(viewW_ / 2, viewH_ / 2 - 4 * scale, "BATTERY EMPTY", scale,
+             {255, 120, 110, 255}, true);
+    present();
+    SDL_Delay(1500);
+
+    // -n so a sudo that would prompt for a password fails fast instead of
+    // hanging the app on a machine without passwordless sudo.
+    if (std::system("sudo -n poweroff >/dev/null 2>&1") != 0)
+        std::system("poweroff >/dev/null 2>&1");
+    running_ = false;
+}
+
 // Blit a BGR cv::Mat to the screen, preserving aspect ratio (letterboxed).
 // Used for decoded gallery/playback frames; the live preview goes through
 // blitCamera so it can keep NV12 and zoom on the GPU.
@@ -412,6 +481,9 @@ bool App::init(const Config& cfg) {
     }
     std::cout << "camera: " << cam_->description() << " " << cam_->width()
               << "x" << cam_->height() << " @ " << cam_->fps() << "fps\n";
+
+    battery_ = Battery::open(cfg_);
+    if (battery_) std::cout << "battery: " << battery_->description() << "\n";
 
     gallery_ = std::make_unique<Gallery>(cfg_.outputDir);
     if (!cfg_.faceCascade.empty()) faceFilter_.setCascade(cfg_.faceCascade);
@@ -687,6 +759,10 @@ void App::playCurrentVideo() {
     bool stop = false;
     while (running_ && !stop && vc.read(frame) && !frame.empty()) {
         Uint32 t0 = SDL_GetTicks();
+        // Playback owns the loop for the length of the clip, so keep the gauge
+        // ticking here too -- otherwise a long video leaves the low-battery
+        // timer frozen at whatever it read before playback started.
+        if (battery_) battery_->poll();
         beginFrame();
         renderMat(frame);
         present();
@@ -782,6 +858,8 @@ void App::renderWelcome() {
         const char* label = (b.action == Action::StartCamera) ? "START" : "SLEEP";
         drawText(b.cx, b.cy + b.r + 12, label, lscale, {255, 255, 255, 235}, true);
     }
+
+    drawBatteryBadge();
 
     // Footer hint about waking from sleep.
     const std::string hint = "DOUBLE-TAP SCREEN TO WAKE FROM SLEEP";
@@ -904,6 +982,8 @@ void App::renderCamera() {
             flashStart_ = 0;
         }
     }
+
+    drawBatteryBadge();
     present();
 }
 
@@ -991,6 +1071,8 @@ void App::renderGallery() {
         auto btns = menu_.layout(Mode::Gallery, viewW_, viewH_, hasVideo);
         for (const auto& b : btns) Menu::drawButton(ren_, b, a);
     }
+
+    drawBatteryBadge();
     present();
 }
 
@@ -1002,6 +1084,14 @@ int App::run() {
     while (running_) {
         pumpEvents();
         if (!running_) break;
+
+        if (battery_) {
+            battery_->poll(); // only touches the bus every couple of seconds
+            if (cfg_.batteryShutdown && battery_->criticallyLow()) {
+                powerOffLowBattery();
+                break;
+            }
+        }
 
         switch (mode_) {
             case Mode::Welcome:

@@ -68,6 +68,11 @@ static void printUsage(const char* prog) {
         "                               filters (default: system opencv-data;\n"
         "                               haarcascade_eye.xml beside it is used for\n"
         "                               the pig-face filter's angle tracking)\n"
+        "  --no-battery                 skip the Waveshare UPS HAT (D) battery\n"
+        "                               gauge (it is auto-detected otherwise)\n"
+        "  --battery-bus N              I2C bus the UPS HAT is on (default: 1)\n"
+        "  --battery-shutdown           power the Pi off when the cell reaches\n"
+        "                               the 3.15 V cut-off (off by default)\n"
         "  --help                       show this help\n";
 }
 
@@ -158,6 +163,17 @@ bool parseArgs(int argc, char** argv, Config& out, int* exitCode) {
         } else if (a == "--face-cascade") {
             const char* v = need(i); if (!v) return false;
             out.faceCascade = v;
+        } else if (a == "--no-battery") {
+            out.battery = false;
+        } else if (a == "--battery-bus") {
+            const char* v = need(i); if (!v) return false;
+            out.batteryBus = std::atoi(v);
+            if (out.batteryBus < 0) {
+                std::cerr << "bad --battery-bus (expected /dev/i2c-N): " << v << "\n";
+                *exitCode = 2; return false;
+            }
+        } else if (a == "--battery-shutdown") {
+            out.batteryShutdown = true;
         } else {
             std::cerr << "unknown option: " << a << " (try --help)\n";
             *exitCode = 2;

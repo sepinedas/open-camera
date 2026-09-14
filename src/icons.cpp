@@ -330,4 +330,66 @@ void drawLegoCamera(SDL_Renderer* ren, int cx, int cy, double u, Uint8 alpha) {
                      A(220), A(240), A(255), (Uint8)(alpha * 0.9));
 }
 
+// ---------------------------------------------------------------------------
+// Battery gauge
+// ---------------------------------------------------------------------------
+
+void drawBattery(SDL_Renderer* ren, int x, int y, int w, int h, int percent,
+                 bool charging, Uint8 alpha) {
+    percent = std::max(0, std::min(100, percent));
+
+    // Leave room on the right for the terminal nub, so (x, y, w, h) is the
+    // whole glyph and callers can lay it out against a screen edge.
+    int nub = std::max(2, h / 5);
+    int bw = w - nub;
+    int bh = h;
+    int nubH = std::max(3, h / 2);
+
+    // Charging is its own state: a full green bar while plugged in would read
+    // as "done", so keep the level colour for the fill and add the bolt.
+    Uint8 fr, fg, fb;
+    if (charging)        { fr = 90;  fg = 200; fb = 250; } // blue: taking charge
+    else if (percent > 50) { fr = 86;  fg = 196; fb = 112; }
+    else if (percent > 20) { fr = 240; fg = 190; fb = 70; }
+    else                   { fr = 235; fg = 80;  fb = 70; }
+
+    // Shell: a translucent dark body so the gauge stays legible over a bright
+    // preview, then a white outline and the terminal nub.
+    Uint8 shell = mod(200, alpha);
+    roundedBoxRGBA(ren, x, y, x + bw, y + bh, 3, 12, 14, 20, mod(110, alpha));
+    roundedRectangleRGBA(ren, x, y, x + bw, y + bh, 3, shell, shell, shell, alpha);
+    boxRGBA(ren, x + bw + 1, y + (bh - nubH) / 2, x + bw + nub,
+            y + (bh + nubH) / 2, shell, shell, shell, alpha);
+
+    // Fill, inset by the outline. Always show a sliver so an almost-flat pack
+    // still reads as a level rather than an empty shell.
+    int pad = 2;
+    int inner = bw - 2 * pad;
+    int fill = (inner * percent) / 100;
+    if (percent > 0) fill = std::max(fill, 2);
+    if (fill > 0)
+        boxRGBA(ren, x + pad, y + pad, x + pad + fill, y + bh - pad,
+                mod(fr, alpha), mod(fg, alpha), mod(fb, alpha), alpha);
+
+    if (!charging) return;
+
+    // Lightning bolt centred on the body: a six-point zig-zag, filled flat so
+    // it stays sharp at the small sizes this is rendered at.
+    double cx = x + bw / 2.0, cy = y + bh / 2.0;
+    double sx = bw / 10.0, sy = bh / 2.6;
+    Sint16 bx[] = {(Sint16)std::lround(cx + 0.9 * sx),
+                   (Sint16)std::lround(cx - 1.1 * sx),
+                   (Sint16)std::lround(cx + 0.1 * sx),
+                   (Sint16)std::lround(cx - 0.9 * sx),
+                   (Sint16)std::lround(cx + 1.1 * sx),
+                   (Sint16)std::lround(cx - 0.1 * sx)};
+    Sint16 by[] = {(Sint16)std::lround(cy - sy),
+                   (Sint16)std::lround(cy + 0.15 * sy),
+                   (Sint16)std::lround(cy + 0.15 * sy),
+                   (Sint16)std::lround(cy + sy),
+                   (Sint16)std::lround(cy - 0.15 * sy),
+                   (Sint16)std::lround(cy - 0.15 * sy)};
+    filledPolygonRGBA(ren, bx, by, 6, 255, 255, 255, alpha);
+}
+
 } // namespace olc
