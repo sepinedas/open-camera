@@ -1,5 +1,7 @@
 #include "filters.hpp"
 
+#include "dog3d.hpp"
+
 #include <glob.h>
 
 #include <algorithm>
@@ -60,6 +62,70 @@ constexpr double kMeshAlpha = 0.80;
 // (lips, eyes, brows, irises, face oval) drawn over it in a second colour.
 using MpConn = mpv::face_landmarker::FaceLandmarksConnections;
 
+// MediaPipe stores the tessellation as edges, but they come in consecutive
+// triples that close into a triangle -- {a,b},{b,c},{c,a} -- so the triangle
+// list is derivable rather than a second table to carry. Verified at compile
+// time so a future table reshuffle cannot silently produce garbage geometry.
+constexpr int kMeshTriangles =
+    (int)MpConn::kFaceLandmarksTesselation.size() / 3;
+constexpr bool tesselationIsTriples() {
+    for (size_t k = 0; k + 2 < MpConn::kFaceLandmarksTesselation.size(); k += 3) {
+        const auto& a = MpConn::kFaceLandmarksTesselation[k];
+        const auto& b = MpConn::kFaceLandmarksTesselation[k + 1];
+        const auto& c = MpConn::kFaceLandmarksTesselation[k + 2];
+        if (a[1] != b[0] || b[1] != c[0] || c[1] != a[0]) return false;
+    }
+    return true;
+}
+static_assert(tesselationIsTriples(),
+              "MediaPipe's tessellation is no longer consecutive edge triples; "
+              "the dog filter's triangle list must be rebuilt");
+
+float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+
+float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+float len(const cv::Point2f& v) { return std::sqrt(v.x * v.x + v.y * v.y); }
+
+float dot(const cv::Point2f& a, const cv::Point2f& b) { return a.x * b.x + a.y * b.y; }
+
+// --- Dog markings, in the head's own frame ---------------------------------
+// Coordinates are eye-separation units from the eye midpoint: +u toward the
+// image-right eye, +v toward the chin. Working here rather than in pixels is
+// what makes the markings track the face -- they are placed relative to the
+// eyes and nose, so they hold through scale, roll, turn and expression.
+constexpr double kDogAlpha = 0.88;
+const cv::Vec3f kDogBase(74, 132, 190);    // BGR: tan coat
+const cv::Vec3f kDogMask(38, 64, 104);     // darker patches around the eyes
+const cv::Vec3f kDogMuzzle(226, 238, 248); // pale muzzle and brow blaze
+const cv::Vec3f kDogNose(26, 24, 24);      // near-black nose leather
+
+// 1 inside the ellipse, easing to 0 across the outer `soft` fraction of it.
+float ellipseMask(float u, float v, float cu, float cv_, float ru, float rv,
+                  float soft) {
+    const float du = (u - cu) / ru, dv = (v - cv_) / rv;
+    const float d = std::sqrt(du * du + dv * dv);
+    return clamp01((1.f - d) / std::max(0.05f, soft));
+}
+
+// The coat colour at one point on the face, blended front to back.
+cv::Vec3f dogColourAt(float u, float v) {
+    cv::Vec3f c = kDogBase;
+    auto over = [&](const cv::Vec3f& col, float a) {
+        c = c * (1.f - a) + col * a;
+    };
+    // Dark patches around both eyes.
+    over(kDogMask, ellipseMask(u, v, -0.54f, 0.00f, 0.60f, 0.48f, 0.42f));
+    over(kDogMask, ellipseMask(u, v, 0.54f, 0.00f, 0.60f, 0.48f, 0.42f));
+    // Pale blaze up the forehead, between the patches.
+    over(kDogMuzzle, ellipseMask(u, v, 0.f, -0.62f, 0.24f, 0.82f, 0.45f));
+    // Pale muzzle over the nose and mouth.
+    over(kDogMuzzle, ellipseMask(u, v, 0.f, 0.98f, 0.70f, 0.74f, 0.26f));
+    // Nose leather.
+    over(kDogNose, ellipseMask(u, v, 0.f, 0.62f, 0.32f, 0.25f, 0.16f));
+    return c;
+}
+
 // --- MediaPipe canonical face-mesh indices --------------------------------
 // The mesh is the standard 468-point topology, plus the two 5-point irises
 // (468..477) when the bundle includes the attention/iris model. "Left" and
@@ -70,6 +136,9 @@ constexpr int kMouthR = 61, kMouthL = 291;  // mouth corners
 constexpr int kLipInnerTop = 13, kLipInnerBot = 14;
 constexpr int kBrowInnerR = 107, kBrowInnerL = 336;
 constexpr int kIrisR = 468, kIrisL = 473;
+constexpr int kNoseTip = 1;                   // where the 3D nose sits
+constexpr int kChin = 152, kForehead = 10;    // the head's vertical axis
+constexpr int kTempleR = 127, kTempleL = 356; // head width -> ear attachment
 constexpr int kEyeROuter = 33, kEyeRInner = 133, kEyeRUp = 159, kEyeRLow = 145;
 constexpr int kEyeLOuter = 263, kEyeLInner = 362, kEyeLUp = 386, kEyeLLow = 374;
 // Size of the base topology. Every index above lives inside it (the highest is
@@ -90,13 +159,42 @@ const char* kModelGlobs[] = {
     "face_landmarker.task",
 };
 
-float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+// Fill one triangle with its three vertex colours interpolated across it.
+// Flat-filling each triangle instead (cv::fillConvexPoly with one colour) is
+// simpler but shows every one of the mesh's 852 facets, worst exactly where a
+// marking has a hard edge -- the nose came out as a polygonal star.
+void fillTriangleSmooth(cv::Mat& img, const cv::Point2f p[3],
+                        const cv::Vec3f c[3]) {
+    const float area = (p[1].x - p[0].x) * (p[2].y - p[0].y) -
+                       (p[2].x - p[0].x) * (p[1].y - p[0].y);
+    if (std::fabs(area) < 1e-6f) return;
+    const float inv = 1.f / area; // signed, so either winding works
 
-float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+    int x0 = (int)std::floor(std::min({p[0].x, p[1].x, p[2].x}));
+    int x1 = (int)std::ceil(std::max({p[0].x, p[1].x, p[2].x}));
+    int y0 = (int)std::floor(std::min({p[0].y, p[1].y, p[2].y}));
+    int y1 = (int)std::ceil(std::max({p[0].y, p[1].y, p[2].y}));
+    x0 = std::max(0, x0); y0 = std::max(0, y0);
+    x1 = std::min(img.cols - 1, x1); y1 = std::min(img.rows - 1, y1);
 
-float len(const cv::Point2f& v) { return std::sqrt(v.x * v.x + v.y * v.y); }
-
-float dot(const cv::Point2f& a, const cv::Point2f& b) { return a.x * b.x + a.y * b.y; }
+    for (int y = y0; y <= y1; ++y) {
+        cv::Vec3b* row = img.ptr<cv::Vec3b>(y);
+        for (int x = x0; x <= x1; ++x) {
+            const float px = x + 0.5f, py = y + 0.5f;
+            const float w0 = ((p[1].x - px) * (p[2].y - py) -
+                              (p[2].x - px) * (p[1].y - py)) * inv;
+            const float w1 = ((p[2].x - px) * (p[0].y - py) -
+                              (p[0].x - px) * (p[2].y - py)) * inv;
+            const float w2 = 1.f - w0 - w1;
+            // A small negative tolerance keeps shared edges from falling
+            // between two triangles and leaving a seam of bare skin.
+            if (w0 < -1e-3f || w1 < -1e-3f || w2 < -1e-3f) continue;
+            const cv::Vec3f col = c[0] * w0 + c[1] * w1 + c[2] * w2;
+            for (int k = 0; k < 3; ++k)
+                row[x][k] = cv::saturate_cast<uchar>(col[k]);
+        }
+    }
+}
 
 // Alpha-blend a filled circle onto a bounded ROI of `img` (keeps the cost of
 // each tear tiny, and gives the tears their translucent, watery look).
@@ -472,9 +570,16 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
         f.lipTop = P(kLipInnerTop);
         f.lipBot = P(kLipInnerBot);
 
-        // The mesh filter draws all of them, so keep the whole set.
+        // The mesh filters draw all of them, so keep the whole set. The 3D
+        // copy scales z by the frame *width*, matching how MediaPipe defines
+        // landmark depth ("roughly the same scale as x"), so the three axes
+        // are commensurable and a basis built from them is meaningful.
         f.mesh.reserve(mesh.size());
-        for (int k = 0; k < (int)mesh.size(); ++k) f.mesh.push_back(P(k));
+        f.mesh3.reserve(mesh.size());
+        for (int k = 0; k < (int)mesh.size(); ++k) {
+            f.mesh.push_back(P(k));
+            f.mesh3.emplace_back(mesh[k].x * W, mesh[k].y * H, mesh[k].z * W);
+        }
 
         // Head axes from the eye line: `right` runs ear-to-ear, `down` toward
         // the chin. Everything below is expressed in those, so the filters
@@ -550,7 +655,8 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
         // The mesh is drawn on the landmarks themselves, so it needs only a
         // couple of pixels for the dot radius and line width -- nothing like
         // the margin the warps need for their Gaussian falloff and tears.
-        const bool meshOnly = (filter == Filter::FaceMesh);
+        const bool meshOnly = (filter == Filter::FaceMesh ||
+                               filter == Filter::DogFace);
         int mx = meshOnly ? 3 : std::max(8, f.width * 2 / 5);
         int mtop = meshOnly ? 3 : std::max(6, f.height * 3 / 10);
         int mbot = meshOnly ? 3 : std::max(8, f.height / 2);
@@ -581,6 +687,8 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applyCry(roi, f, off, phase);
         } else if (filter == Filter::FaceMesh) {
             applyFaceMesh(roi, f, off);
+        } else if (filter == Filter::DogFace) {
+            applyDogFace(roi, f, off, phase);
         }
     }
 }
@@ -767,12 +875,125 @@ void FaceFilter::applyFaceMesh(cv::Mat& frame, const Face& f,
     cv::addWeighted(ov, kMeshAlpha, roi, 1.0 - kMeshAlpha, 0.0, roi);
 }
 
+// Read the head's orientation straight off the mesh. Three landmarks give the
+// axes: the outer eye corners span the head's width, the forehead-to-chin line
+// its height, and their cross product the direction it faces. Because
+// MediaPipe supplies a depth per landmark, this is a genuine 3D frame -- no
+// guessing yaw from how the nose divides the face, and no foreshortening
+// correction, which is what the old rig needed and never got quite right.
+void FaceFilter::drawDogParts(cv::Mat& frame, const Face& f,
+                              cv::Point2f off, double phase) const {
+    if ((int)f.mesh3.size() < 468) return;
+    auto V = [&](int i) {
+        return cv::Vec3f(f.mesh3[i].x, f.mesh3[i].y, f.mesh3[i].z);
+    };
+    auto unit3 = [](cv::Vec3f v) {
+        const float n = std::sqrt(v.dot(v));
+        return n > 1e-6f ? v * (1.f / n) : v;
+    };
+
+    // The unit is the distance between the eye *centres*, not the outer
+    // corners: every proportion below and every constant in dog3d is expressed
+    // in eye separations, and the outer corners are about 1.45x that, which
+    // would scale the whole rig up by the same factor.
+    auto eyeCentre = [&](int a, int b, int c, int d) {
+        return (V(a) + V(b) + V(c) + V(d)) * 0.25f;
+    };
+    const cv::Vec3f cR = eyeCentre(kEyeROuter, kEyeRInner, kEyeRUp, kEyeRLow);
+    const cv::Vec3f cL = eyeCentre(kEyeLOuter, kEyeLInner, kEyeLUp, kEyeLLow);
+    const cv::Vec3f span = cL - cR;
+    const float unit = std::sqrt(span.dot(span));
+    if (unit < 12.f) return;
+
+    cv::Vec3f ex = unit3(span);
+    const cv::Vec3f ey0 = unit3(V(kChin) - V(kForehead));
+    // ez completes a right-handed frame; with image y pointing down, that
+    // points *away* from the camera, which is the depth direction wanted.
+    cv::Vec3f ez = unit3(ex.cross(ey0));
+    const cv::Vec3f ey = unit3(ez.cross(ex)); // re-orthogonalise
+    // MediaPipe labels by the subject's anatomy, so on a mirrored preview the
+    // "left" outer eye corner is on the image right; flip so +x is image-right.
+    if (ex[0] < 0.f) { ex = -ex; ez = -ez; }
+
+    dog3d::Head h;
+    h.R = cv::Matx33f(ex[0], ey[0], ez[0],
+                      ex[1], ey[1], ez[1],
+                      ex[2], ey[2], ez[2]); // columns: right, down, back
+    h.unit = unit;
+    const cv::Point2f eyeMid = (f.eyeL + f.eyeR) * 0.5f - off;
+    h.anchor = eyeMid;
+    h.phase = phase;
+
+    // Proportions, read in the head's own frame -- exact here, because the
+    // frame is 3D and nothing is foreshortened.
+    const cv::Vec3f origin = (cR + cL) * 0.5f; // matches h.anchor exactly
+    auto inHead = [&](int i) {
+        const cv::Vec3f d = V(i) - origin;
+        return cv::Vec3f(d.dot(ex), d.dot(ey), d.dot(ez)) * (1.f / unit);
+    };
+    const cv::Vec3f crown = inHead(kForehead);
+    const cv::Vec3f nose = inHead(kNoseTip);
+    const cv::Vec3f tL = inHead(kTempleR), tR = inHead(kTempleL);
+    h.crownY = clampf(crown[1], -1.60f, -0.45f);
+    h.headHalfW = clampf(0.5f * std::fabs(tR[0] - tL[0]), 0.70f, 1.80f);
+    h.noseY = clampf(nose[1], 0.35f, 1.10f);
+    h.noseZ = clampf(nose[2], -0.90f, -0.05f);
+
+    dog3d::render(frame, h);
+}
+
+void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
+                              cv::Point2f off, double phase) const {
+    if ((int)f.mesh.size() < 468) return;
+    const float eyeSep = len(f.eyeR - f.eyeL);
+    if (eyeSep < 8.f) return;
+
+    cv::Rect b(f.box.x - (int)off.x - 2, f.box.y - (int)off.y - 2,
+               f.box.width + 4, f.box.height + 4);
+    b &= cv::Rect(0, 0, frame.cols, frame.rows);
+    if (b.width < 8 || b.height < 8) return;
+
+    cv::Mat roi = frame(b);
+    cv::Mat ov = roi.clone();
+    const cv::Point org = b.tl();
+    const cv::Point2f eyeMid = (f.eyeL + f.eyeR) * 0.5f - off;
+    const float invEye = 1.f / eyeSep;
+
+    // Colour every vertex once, from where it sits in the head's frame, then
+    // let the triangles interpolate between them. Evaluating per vertex rather
+    // than per triangle is what makes the markings smooth across the mesh.
+    std::vector<cv::Vec3f> vcol(f.mesh.size());
+    std::vector<cv::Point2f> vpos(f.mesh.size());
+    for (size_t i = 0; i < f.mesh.size(); ++i) {
+        const cv::Point2f q = f.mesh[i] - off;
+        vpos[i] = cv::Point2f(q.x - org.x, q.y - org.y);
+        const cv::Point2f d = q - eyeMid;
+        vcol[i] = dogColourAt(dot(d, f.right) * invEye, dot(d, f.down) * invEye);
+    }
+
+    const auto& tess = MpConn::kFaceLandmarksTesselation;
+    for (int t = 0; t < kMeshTriangles; ++t) {
+        const int ia = tess[3 * t][0], ib = tess[3 * t + 1][0],
+                  ic = tess[3 * t + 2][0];
+        const cv::Point2f tri[3] = {vpos[ia], vpos[ib], vpos[ic]};
+        const cv::Vec3f col[3] = {vcol[ia], vcol[ib], vcol[ic]};
+        fillTriangleSmooth(ov, tri, col);
+    }
+    cv::addWeighted(ov, kDogAlpha, roi, 1.0 - kDogAlpha, 0.0, roi);
+
+    // Ears and nose on top, as real geometry. They cannot come from the face
+    // mesh -- it stops at the face -- so they are oriented by a basis measured
+    // from it in 3D instead.
+    drawDogParts(frame, f, off, phase);
+}
+
 Filter nextFilter(Filter f) {
     switch (f) {
         case Filter::None:     return Filter::BigSmile;
         case Filter::BigSmile: return Filter::Crying;
         case Filter::Crying:   return Filter::FaceMesh;
-        case Filter::FaceMesh: return Filter::None;
+        case Filter::FaceMesh: return Filter::DogFace;
+        case Filter::DogFace:  return Filter::None;
     }
     return Filter::None;
 }
@@ -783,6 +1004,7 @@ const char* filterName(Filter f) {
         case Filter::BigSmile: return "Big Smile";
         case Filter::Crying:   return "Crying";
         case Filter::FaceMesh: return "Face Mesh";
+        case Filter::DogFace:  return "Dog Face";
     }
     return "";
 }

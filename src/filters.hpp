@@ -6,6 +6,7 @@
 
 #include <opencv2/core.hpp>
 
+#include "dog3d.hpp"
 #include "types.hpp"
 
 namespace olc {
@@ -105,10 +106,15 @@ private:
         cv::Point2f right, down;    // unit vectors along / across the eye line
         float open = 0.f;           // 0..1 how far the jaw is open
         float smile = 0.f;          // 0..1 how much the mouth already grins
-        // Every landmark, in frame coordinates. Only the mesh filter needs the
+        // Every landmark, in frame coordinates. Only the mesh filters need the
         // whole set -- the warps work from the handful resolved above -- so
         // this is the one place the full mesh is kept.
         std::vector<cv::Point2f> mesh;
+        // The same landmarks with MediaPipe's depth, scaled to match x so the
+        // three axes share units. This is what lets the dog's ears and nose be
+        // oriented by a real 3D basis read off the face rather than by angles
+        // inferred from where features sit in a flat box.
+        std::vector<cv::Point3f> mesh3;
     };
 
     // MediaPipe landmarker + the scratch buffers it needs; defined in the .cpp
@@ -130,9 +136,18 @@ private:
                      cv::Point2f lipTop, cv::Point2f lipBot, float strength) const;
     // Draw the falling tears of the crying filter.
     void drawTears(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;
-    // Draw the tracked landmarks as dots joined by the edges of a Delaunay
-    // triangulation over them: the wireframe-over-the-face look.
+    // Draw the tracked landmarks as dots joined by MediaPipe's own
+    // tessellation: the wireframe-over-the-face look.
     void applyFaceMesh(cv::Mat& frame, const Face& f, cv::Point2f off) const;
+    // Paint a dog onto the face by filling the mesh triangles. Because the
+    // colour of each triangle is decided in the head's own frame, the markings
+    // follow the face through expression and pose instead of floating over it.
+    void applyDogFace(cv::Mat& frame, const Face& f, cv::Point2f off,
+                      double phase) const;
+    // Draw the dog's 3D ears and nose, oriented by a basis measured from the
+    // face mesh in three dimensions.
+    void drawDogParts(cv::Mat& frame, const Face& f, cv::Point2f off,
+                      double phase) const;
 
     std::unique_ptr<Landmarker> lm_;
     bool warned_ = false;     // "no model" logged only once

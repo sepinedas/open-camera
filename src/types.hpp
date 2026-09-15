@@ -43,6 +43,7 @@ enum class Filter {
     BigSmile, // mouth stretched into a wide grin; teeth pop when it opens
     Crying,   // mouth/brows pulled into a frown, with falling tears
     FaceMesh, // the tracked landmarks drawn over the face as dots and edges
+    DogFace,  // a dog painted onto the face mesh, so it moves with the face
 };
 
 } // namespace olc

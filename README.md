@@ -264,9 +264,9 @@ build/open-lego-camera [options]
 ### Facial filters
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
-**Big Smile** → **Crying** → **Face Mesh** → off. The active filter's name
-appears briefly on screen, and the effect is baked into any photo you then
-capture.
+**Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → off. The active
+filter's name appears briefly on screen, and the effect is baked into any photo
+you then capture.
 
 - **Big Smile** stretches your mouth's corners up and out into a wide grin and
   opens it vertically; the more you open your mouth, the more your teeth are
@@ -277,6 +277,12 @@ capture.
 - **Face Mesh** draws the tracking itself: every landmark as a dot, joined by
   MediaPipe's **own** 2556-edge tessellation, with the feature contours (face
   oval, eyes, brows, irises, lips) picked out over the top in a second colour.
+- **Dog Face** paints a dog onto that same mesh — tan coat, dark eye mask,
+  pale blaze and muzzle — by filling the tessellation's 852 triangles, then
+  adds **3D floppy ears and a glossy nose** over the top. The markings *are*
+  the mesh, so they sit on the face and follow every turn, tilt and
+  expression; the ears and nose are real shaded geometry, because neither can
+  come from a mesh that stops at the face.
 
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
@@ -286,7 +292,7 @@ the in-plane roll and the scale, and every displacement is applied along those
 axes rather than the image's, so a tilted head is reshaped along the face
 instead of along the screen.
 
-**The mesh filter's connectivity is MediaPipe's, not ours.** The edge tables
+**The mesh filters' connectivity is MediaPipe's, not ours.** The edge tables
 come from `face_landmarks_connections.h` in the Tasks headers — the same ones
 its own renderers use — so the wireframe is the canonical topology rather than
 a triangulation re-derived here. The whole overlay is drawn into one scratch
@@ -294,6 +300,36 @@ copy and blended back in a single pass: at ~2700 edges per face, alpha-blending
 each line separately would clone the region thousands of times per frame. It is
 the most drawing-heavy filter, and unlike the warps its cost scales with the
 number of landmarks rather than the face's size on screen.
+
+**Dog Face is the same mesh, filled instead of outlined.** MediaPipe stores the
+tessellation as edges, but they arrive in consecutive triples that close into a
+triangle, so the 852-triangle list is derived from that table rather than
+carried as a second one — with a `static_assert` that the structure still
+holds, so a future table reshuffle cannot silently produce garbage geometry.
+
+Each marking is placed in the head's own frame — eye-separation units from the
+eye midpoint — so it is defined relative to the eyes and nose and holds through
+scale, roll and turn. Every *vertex* is coloured and the triangles interpolate
+between them: colouring per triangle instead is simpler but shows all 852
+facets, worst exactly where a marking has a hard edge, which turned the nose
+into a polygonal star. It is far cheaper than the wireframe — one pass over the
+face's pixels, rather than thousands of short anti-aliased lines.
+
+**The ears and nose are oriented by a basis read off the mesh in 3D.**
+MediaPipe gives every landmark a depth, so the head's axes come straight from
+it: the outer eye corners span its width, forehead-to-chin its height, and
+their cross product the direction it faces. No yaw inferred from how the nose
+divides the face, and no foreshortening correction — measuring the ear
+attachment and nose position *in that frame* is exact, because nothing in it
+is foreshortened. `dog3d` then renders them with a z-buffer, Gouraud shading
+and 2×2 supersampling, scaled in eye separations so they track distance.
+
+> Two things bite anyone touching this geometry. The scale unit is the
+> distance between eye **centres**; using the outer corners instead — an easy
+> substitution — silently enlarges the entire rig by about 1.45×. And the nose
+> dome must be wound so its outward face is the front face: copying the
+> winding of a forward-sweeping tube leaves it wholly back-facing, and culling
+> eats all but a sliver of rim.
 
 ### Rotating the display
 
