@@ -109,7 +109,7 @@ add_executable(open-lego-camera
   src/icons.cpp
   src/ui.cpp
   src/filters.cpp
-  src/pig3d.cpp
+  src/animal3d.cpp
   src/app.cpp
 )
 

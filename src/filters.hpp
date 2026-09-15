@@ -6,6 +6,7 @@
 
 #include <opencv2/core.hpp>
 
+#include "animal3d.hpp"
 #include "types.hpp"
 
 namespace olc {
@@ -18,10 +19,11 @@ namespace olc {
 // mouth and brows pulled into a frown, the only thing drawn on top being the
 // crying tears.
 //
-// The "pig face" filter instead overlays real 3D models -- mesh ears and a
-// protruding snout with nostrils -- rendered by `pig3d` through a perspective
-// camera, oriented by the head pose so the snout foreshortens and the ears
-// swing around the head instead of sitting on top like stickers.
+// The "pig face" and "dog face" filters instead overlay real 3D models -- mesh
+// ears and a protruding muzzle -- rendered by `animal3d` through a perspective
+// camera, oriented by the head pose so the muzzle foreshortens and the ears
+// swing around the head instead of sitting on top like stickers. Both share one
+// renderer and differ only by a table of geometry and colours.
 //
 // Faces are found with **MediaPipe's Face Landmarker** (Tasks Vision C++ API,
 // CPU/TFLite), which returns a dense 478-point face mesh per face plus the
@@ -99,12 +101,14 @@ public:
     // touched, so callers can convert and re-encode just the dirty region.
     void applyRegion(cv::Mat& roi, cv::Point origin, Filter filter, double phase);
 
-    // Draw the 3D pig-face graphics for an explicit face box and eye landmarks,
+    // Draw the 3D animal graphics for an explicit face box and eye landmarks,
     // bypassing detection. Pass eye centres (image coords) to orient it; pass
     // (-1,-1) for either to fall back to the box (upright). Used by the mockup
-    // tools and tests to preview the effect deterministically.
-    void drawPigPreview(cv::Mat& frame, const cv::Rect& face, cv::Point2f leftEye,
-                        cv::Point2f rightEye, double phase) const;
+    // tools and tests to preview the effect deterministically. Without measured
+    // landmarks the rig falls back to generic proportions.
+    void drawAnimalPreview(cv::Mat& frame, const cv::Rect& face,
+                           cv::Point2f leftEye, cv::Point2f rightEye,
+                           double phase, animal3d::Species species) const;
 
 private:
     // Everything the filters need to know about one detected face, in full-res
@@ -128,7 +132,7 @@ private:
         // the head's frame (+ is down from the eye midpoint). These drive the
         // pig's snout and ear placement so the rig matches the face in front
         // of it rather than assuming average proportions. Kept as plain floats
-        // so filters.hpp does not have to pull in pig3d.hpp.
+        // so the struct stays free of animal3d's own types.
         float noseY = 0.32f;        // nose tip, below the eye line
         float noseHalfW = 0.28f;    // half the alar (nostril) width
         float crownY = -0.90f;      // top of the head, above the eye line
@@ -146,9 +150,10 @@ private:
 
     void applySmile(cv::Mat& frame, const Face& f, cv::Point2f off) const;
     void applyCry(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;
-    // Draw the smooth 3D pig ears/snout over one face, oriented by its measured
+    // Draw the 3D animal ears/muzzle over one face, oriented by its measured
     // head pose. `phase` drives a gentle ear wiggle.
-    void applyPig(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;
+    void applyAnimal(cv::Mat& frame, const Face& f, cv::Point2f off, double phase,
+                     animal3d::Species species) const;
 
     // Brighten toward white the teeth showing between the lips, given the
     // mouth's *post-warp* corners and inner-lip centres. Stronger the wider

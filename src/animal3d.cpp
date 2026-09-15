@@ -1,4 +1,4 @@
-#include "pig3d.hpp"
+#include "animal3d.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +6,7 @@
 
 #include <opencv2/imgproc.hpp>
 
-namespace olc::pig3d {
+namespace olc::animal3d {
 
 namespace {
 
@@ -89,6 +89,99 @@ void basis(const Vec3f& axis, Vec3f& u, Vec3f& v) {
     v = norm(axis.cross(u));  // roughly head-up/down
 }
 
+// Everything that differs between the animals. The rig around it -- pose,
+// camera, z-buffer, shading -- is shared, so adding a species is a row here
+// rather than another renderer.
+//
+// Lengths and radii are in eye-separation units; ear corners are multiples of
+// the measured half-head-width and offsets from the measured crown. Colours
+// are BGR, to match the frame they are composited into.
+struct Style {
+    // --- muzzle ---
+    float muzzleLen;   // how far it protrudes along the face normal
+    // How far the muzzle axis tilts *down* the face as it comes forward. This
+    // matters more than it looks: a muzzle that only protrudes is seen end-on
+    // from the front, where a tapering one hides behind its own nose and shows
+    // a few pixels of rim. Dropping the axis presents it side-on instead.
+    float muzzleDrop;
+    float muzzleR0;    // radius at the face, as a multiple of the alar width
+    float muzzleTaper; // tip radius / base radius: >1 flares, <1 narrows
+    float muzzleFlat;  // cross-section height / width
+    // padCol is the flat front face of the muzzle; noseCol is the nose itself
+    // (the pig's nostrils, the dog's leather). Painting the front face with the
+    // nose colour turns the whole muzzle into one dark blob.
+    Vec3f muzzleCol, padCol, noseCol;
+    bool nostrils;     // pig: two holes in a flat disc; dog: a domed nose
+
+    // --- ears ---
+    // An ear is a lobe swept from an attachment on the head to a tip, with a
+    // width profile along the way. x is a multiple of headHalfW, y an offset
+    // from crownY.
+    float earAttachX, earAttachY; // centre of the attachment on the head
+    float earTipX, earTipY;       // centre of the far end
+    float earHalfW;               // widest half-width, multiple of headHalfW
+    float earRound;               // tip shape: small = round lobe, large = point
+    float earBulge, earCurl;
+    Vec3f earCol, earInnerCol;
+};
+
+Style styleFor(Species sp) {
+    Style s{};
+    if (sp == Species::Pig) {
+        s.muzzleLen = 0.58f;
+        s.muzzleDrop = 0.12f;
+        s.muzzleR0 = 1.85f;
+        s.muzzleTaper = 1.12f; // a pig's snout flares toward the disc
+        s.muzzleFlat = 0.80f;  // wider than tall
+        s.muzzleCol = Vec3f(168, 152, 236);
+        s.padCol = Vec3f(184, 168, 243);
+        s.noseCol = Vec3f(40, 32, 70);
+        s.nostrils = true;
+        // Stands ON the crown, leaning up and outward. The tip's y is
+        // *negative* -- above the crown -- which is what keeps the whole ear
+        // clear of the face.
+        s.earAttachX = 0.56f; s.earAttachY = 0.12f;
+        s.earTipX = 0.90f;    s.earTipY = -0.86f;
+        s.earHalfW = 0.39f;   s.earRound = 2.4f;
+        s.earBulge = 0.16f;   s.earCurl = 0.10f;
+        s.earCol = Vec3f(172, 152, 239);
+        s.earInnerCol = Vec3f(122, 98, 202);
+    } else { // Dog
+        // A longer muzzle that narrows to a small domed nose, and big soft
+        // ears that hang down past the eye line instead of standing up.
+        // A broad rounded muzzle pad rather than a long tube. A long muzzle is
+        // more dog-like in profile but the camera looks at a face head-on,
+        // where it is seen end-on and collapses behind its own nose; dropping
+        // the axis far enough to fix that put it below the chin, reading as a
+        // beard. A short wide bulge carrying a big dark nose is what actually
+        // reads as a dog from the front.
+        s.muzzleLen = 0.45f;
+        s.muzzleDrop = 0.17f;
+        s.muzzleR0 = 2.40f;
+        s.muzzleTaper = 0.85f; // barely tapers: stays broad at the nose
+        s.muzzleFlat = 0.82f;
+        // Brown, near the ear colour. A pale muzzle is the more typical dog
+        // marking but it does not read here: cream sits within ~25 levels of
+        // human skin tone once shaded, so the whole muzzle vanished into the
+        // face. Contrast has to go *darker* than skin, not lighter.
+        s.muzzleCol = Vec3f(105, 148, 196); // mid brown: clear of skin and of
+                                            // the near-black nose above it
+        s.padCol = Vec3f(124, 168, 214);    // muzzle front, a shade lighter
+        s.noseCol = Vec3f(48, 42, 40);     // near-black nose leather
+        s.nostrils = false;
+        // A broad soft lobe hanging down the *side* of the head. It attaches
+        // near the top corner and drapes outside the silhouette, so it never
+        // crosses the eye, and its tip is rounded rather than pointed.
+        s.earAttachX = 0.94f; s.earAttachY = -0.06f;
+        s.earTipX = 1.24f;    s.earTipY = 1.28f;
+        s.earHalfW = 0.37f;   s.earRound = 9.0f;
+        s.earBulge = 0.15f;   s.earCurl = 0.12f;
+        s.earCol = Vec3f(62, 96, 138);
+        s.earInnerCol = Vec3f(78, 92, 126);
+    }
+    return s;
+}
+
 // Where the snout sits and how big it is, derived from the measured nose so
 // the tube lands *on* the nose instead of at a fixed spot on the face. The
 // front pad is centred on the nose tip: `base` is pulled back along the axis by
@@ -99,14 +192,14 @@ struct SnoutFrame {
     float len, rx, ry;
 };
 
-SnoutFrame snoutFrame(const Proportions& p) {
+SnoutFrame snoutFrame(const Proportions& p, const Style& st) {
     SnoutFrame s;
-    s.axis = norm(Vec3f(0.f, 0.12f, -1.f)); // mostly forward, a touch down
-    s.len = 0.50f;
-    // A pig's snout is chunkier than the human nose underneath it; scale the
-    // measured alar half-width up rather than inventing an absolute size.
-    s.rx = 1.50f * p.noseHalfW;
-    s.ry = 0.83f * s.rx; // wider than tall, as before (0.35/0.42)
+    s.axis = norm(Vec3f(0.f, st.muzzleDrop, -1.f)); // forward and downward
+    s.len = st.muzzleLen;
+    // An animal muzzle is chunkier than the human nose underneath it; scale
+    // the measured alar half-width up rather than inventing an absolute size.
+    s.rx = st.muzzleR0 * p.noseHalfW;
+    s.ry = st.muzzleFlat * s.rx;
     // The base sits on the face at the measured nose height and the tube
     // protrudes forward from there, so the pad ends up just in front of and
     // just below the nose -- where a snout actually is. (Pinning the *pad* to
@@ -120,13 +213,13 @@ SnoutFrame snoutFrame(const Proportions& p) {
 
 // The snout: an elliptical tube protruding forward (-Z) from the face, capped by
 // a domed front pad. Wider than tall, flaring slightly toward the front.
-Mesh buildSnout(const Proportions& prop) {
+Mesh buildMuzzle(const Proportions& prop, const Style& st) {
     Mesh m;
     m.ambient = 0.42f;
     m.spec = 0.26f;
     m.shin = 18.f;
-    const Vec3f pink(168, 152, 236);
-    const SnoutFrame sf = snoutFrame(prop);
+    const Vec3f pink = st.muzzleCol;
+    const SnoutFrame sf = snoutFrame(prop, st);
     const Vec3f base = sf.base;
     const Vec3f axis = sf.axis;
     const float len = sf.len;
@@ -138,8 +231,11 @@ Mesh buildSnout(const Proportions& prop) {
     for (int r = 0; r < nRing; ++r) {
         float t = (float)r / (nRing - 1);
         Vec3f c = base + axis * (t * len);
-        float rx = sf.rx * (1.f + 0.14f * t); // flare forward
-        float ry = sf.ry * (1.f + 0.12f * t);
+        // Interpolate base radius -> tip radius, so a pig flares out and a
+        // dog narrows toward the nose.
+        const float k = 1.f + (st.muzzleTaper - 1.f) * t;
+        float rx = sf.rx * k;
+        float ry = sf.ry * k;
         for (int i = 0; i < nSeg; ++i) {
             float a = 2.f * kPi * i / nSeg;
             Vec3f p = c + u * (rx * std::cos(a)) + v * (ry * std::sin(a));
@@ -155,9 +251,9 @@ Mesh buildSnout(const Proportions& prop) {
 
     // Front pad: a slightly brighter, domed disc closing the tube. `axis` points
     // toward the camera (its z is negative), so adding it bulges the pad OUT.
-    const Vec3f pad(184, 168, 243);
+    const Vec3f pad = st.padCol;
     Vec3f fc = base + axis * len;
-    float frx = sf.rx * 1.14f, fry = sf.ry * 1.12f;
+    float frx = sf.rx * st.muzzleTaper, fry = sf.ry * st.muzzleTaper;
     int centre = m.add(fc + axis * 0.07f, pad); // dome bulging toward camera
     std::vector<int> fringe;
     for (int i = 0; i < nSeg; ++i) {
@@ -173,27 +269,67 @@ Mesh buildSnout(const Proportions& prop) {
 }
 
 // Two nostrils: small dark domes recessed into the snout's front pad.
-Mesh buildNostrils(const Proportions& prop) {
+Mesh buildNose(const Proportions& prop, const Style& st) {
     Mesh m;
     m.doubleSided = true; // tiny discs; skip culling so winding never hides them
     m.ambient = 0.34f;
     m.spec = 0.05f;
     m.shin = 20.f;
-    const Vec3f dark(40, 32, 70);
-    // Same frame as the snout -- these used to repeat its constants, so any
-    // change to the snout silently left the nostrils behind.
-    const SnoutFrame sf = snoutFrame(prop);
+    const Vec3f dark = st.noseCol;
+    // Same frame as the muzzle -- these used to repeat its constants, so any
+    // change to the muzzle silently left the nostrils behind.
+    const SnoutFrame sf = snoutFrame(prop, st);
     const Vec3f axis = sf.axis;
     const Vec3f u = sf.u, v = sf.v; // u ~ head-right (image), v ~ head-down
     const Vec3f fc = sf.padCentre;
 
     const int nSeg = 16;
+
+    if (!st.nostrils) {
+        // Dog: one rounded nose bulging off the end of the muzzle, rather than
+        // a pig's flat disc with two holes punched in it. Built as a hemisphere
+        // of latitude rings so it catches a highlight and reads as wet leather.
+        m.doubleSided = false; // closed and convex: back faces can be culled
+        m.spec = 0.45f;
+        m.shin = 30.f;
+        const float R = 0.74f * sf.rx * st.muzzleTaper;
+        const Vec3f centre = fc + axis * (0.35f * R);
+        const int nRing = 6;
+        std::vector<std::vector<int>> ring(nRing);
+        for (int r = 0; r < nRing; ++r) {
+            // 0 at the equator (against the muzzle), 1 at the pole (forward).
+            const float lat = 0.5f * kPi * (float)r / (nRing - 1);
+            const float cr = std::cos(lat) * R, cz = std::sin(lat) * R;
+            for (int i = 0; i < nSeg; ++i) {
+                const float a = 2.f * kPi * i / nSeg;
+                // Slightly wider than tall, like a real nose leather.
+                Vec3f pt = centre + u * (1.15f * cr * std::cos(a)) +
+                           v * (0.90f * cr * std::sin(a)) + axis * cz;
+                ring[r].push_back(m.add(pt, st.noseCol));
+            }
+        }
+        // Wound so the outward face is the front face. The tube above sweeps
+        // its rings the other way round its axis, so copying its winding here
+        // put the whole dome back-facing and culling swallowed it, leaving
+        // only a sliver of rim showing past the muzzle.
+        for (int r = 0; r + 1 < nRing; ++r)
+            for (int i = 0; i < nSeg; ++i) {
+                const int j = (i + 1) % nSeg;
+                m.face(ring[r][i], ring[r + 1][j], ring[r][j]);
+                m.face(ring[r][i], ring[r + 1][i], ring[r + 1][j]);
+            }
+        m.computeNormals();
+        return m;
+    }
+
     for (float side : {-1.f, 1.f}) {
         // Two prominent holes near the centre of the domed pad, sitting just in
         // front of it so they win the z-test; slanted outward as a pig's are.
         // (+axis moves toward the camera; +v is downward.)
-        Vec3f c = fc + u * (0.38f * sf.rx * side) + v * 0.015f + axis * 0.09f;
-        float rx = 0.24f * sf.rx, ry = 0.43f * sf.ry;
+        Vec3f c = fc + u * (0.38f * sf.rx * st.muzzleTaper * side) +
+                  v * 0.015f + axis * 0.09f;
+        float rx = 0.21f * sf.rx * st.muzzleTaper;
+        float ry = 0.30f * sf.ry * st.muzzleTaper;
         float ca = std::cos(side * 0.28f), sa = std::sin(side * 0.28f);
         int centre = m.add(c + axis * 0.02f, dark);
         std::vector<int> fr;
@@ -222,50 +358,65 @@ Mesh buildNostrils(const Proportions& prop) {
 // (A..B) toward the tip C, so it is wide along the crown and narrows to the tip.
 // A gentle mid-surface bulge plus a slight forward curl of the tip give it body,
 // and the lower-inner region is tinted a deeper pink for the ear's hollow.
-Mesh buildEar(float side, float wiggle, const Proportions& prop) {
+Mesh buildEar(float side, float wiggle, const Proportions& prop, const Style& st) {
     Mesh m;
     m.doubleSided = true;
     m.ambient = 0.38f;
     m.spec = 0.12f;
     m.shin = 12.f;
-    const Vec3f pink(172, 152, 239);
-    const Vec3f inner(122, 98, 202);
+    const Vec3f pink = st.earCol;
+    const Vec3f inner = st.earInnerCol;
 
-    // Corners (model eyes are at (+-0.5, -0.35); +y is down, -z toward camera).
-    // A wide, roughly horizontal top edge (A..B) along the crown, dropping to a
-    // soft tip C low on the outer side -> a big triangular flap draped over the
-    // side of the head, clear of the (more medial) eye.
-    // Anchored to the measured head rather than to fixed offsets: B sits at the
-    // temple, so the ear attaches at the real silhouette edge, and the crown
-    // height sets how high up the flap starts. The inner/outer and vertical
-    // ratios that give the ear its shape are preserved from the original rig.
+    // An ear is a lobe swept along an axis from where it joins the head to its
+    // tip, widening out of the attachment and closing again at the far end.
+    // Sweeping a *width profile* is what makes it read as an ear: blending the
+    // whole outline to a single point, as this used to, yields a flat triangle
+    // that looks like a horn however it is positioned.
+    //
+    // Model eyes are at (+-0.5, -0.35); +y is down, -z is toward the camera.
     const float hw = prop.headHalfW;
     const float cy = prop.crownY;
-    const Vec3f A(side * 0.31f * hw, cy, -0.10f);        // inner-top, near the crown
-    const Vec3f B(side * hw, cy + 0.08f, -0.02f);        // outer-top attachment
-    const Vec3f C(side * 0.84f * hw, cy + 0.94f, -0.32f); // drooping outer tip
-    Vec3f Nrm = norm((B - A).cross(C - A));       // flap plane normal
-    if (Nrm[2] > 0.f) Nrm = -Nrm;                 // face the camera
-    const float bulge = 0.17f, tipCurl = 0.16f;
+    const Vec3f attach(side * st.earAttachX * hw, cy + st.earAttachY, -0.08f);
+    const Vec3f tip(side * st.earTipX * hw, cy + st.earTipY, -0.26f);
+    const Vec3f axis = tip - attach;
+    // Across the lobe, perpendicular to its axis and to the view direction, so
+    // the width is always spread across the screen rather than into it.
+    Vec3f across = norm(Vec3f(0.f, 0.f, -1.f).cross(norm(axis)));
+    if (across[0] * side < 0.f) across = -across; // keep +across pointing outward
+    Vec3f Nrm = norm(across.cross(norm(axis)));
+    if (Nrm[2] > 0.f) Nrm = -Nrm; // face the camera
+    const float maxHalfW = st.earHalfW * hw;
+    const float bulge = st.earBulge, tipCurl = st.earCurl;
 
-    const int nA = 11, nT = 12;
+    // Half-width along the lobe: broad where it meets the head, widest a third
+    // of the way along, then closing. `earRound` sets how abruptly it closes --
+    // a small value rounds the tip off, a large one draws it to a point.
+    auto halfWidth = [&](float t) {
+        const float body = 0.70f + 0.30f * std::sin(kPi * clampf(t * 0.85f + 0.08f, 0.f, 1.f));
+        const float close = std::pow(std::max(0.f, 1.f - std::pow(t, st.earRound)), 0.45f);
+        return maxHalfW * body * close;
+    };
+
+    const int nA = 13, nT = 14;
     std::vector<std::vector<int>> g(nT, std::vector<int>(nA));
     for (int ti = 0; ti < nT; ++ti) {
-        float t = (float)ti / (nT - 1); // 0 at the crown edge, 1 at the tip
+        const float t = (float)ti / (nT - 1); // 0 at the head, 1 at the tip
+        const Vec3f centre = attach + axis * t;
+        const float w = halfWidth(t);
         for (int ai = 0; ai < nA; ++ai) {
-            float a = (float)ai / (nA - 1); // 0 at A (inner), 1 at B (outer)
-            Vec3f top = A + (B - A) * a;
-            Vec3f p = top + (C - top) * t; // blend the crown edge toward the tip
-            // Soft body: bulge the middle of the flap toward the camera, easing
-            // out at the edges and toward the tip.
-            float edge = std::sin(kPi * a);
-            p += Nrm * (bulge * edge * (1.f - 0.5f * t));
-            // Floppy forward curl of the drooping tip.
+            const float a = -1.f + 2.f * (float)ai / (nA - 1); // -1..1 across
+            Vec3f p = centre + across * (w * a);
+            // Soft body: bulge the middle toward the camera, easing out at the
+            // rim so the lobe has thickness instead of reading as paper.
+            const float edge = std::cos(a * 0.5f * kPi);
+            p += Nrm * (bulge * edge * (1.f - 0.35f * t));
+            // A gentle forward curl toward the tip, so it hangs rather than
+            // standing perfectly flat.
             p += Nrm * (tipCurl * t * t);
-            // Deeper-pink inner hollow over the lower-central part of the ear.
-            float inF = clampf((t - 0.30f) * 1.4f, 0.f, 1.f) *
-                        clampf(1.f - std::fabs(a - 0.5f) * 1.7f, 0.f, 1.f);
-            Vec3f col = pink * (1.f - inF) + inner * inF;
+            // Darker inner hollow down the centre of the lobe.
+            const float inF = clampf((t - 0.18f) * 1.5f, 0.f, 1.f) *
+                              clampf(1.f - std::fabs(a) * 1.5f, 0.f, 1.f);
+            const Vec3f col = pink * (1.f - inF) + inner * inF;
             g[ti][ai] = m.add(p, col);
         }
     }
@@ -278,7 +429,7 @@ Mesh buildEar(float side, float wiggle, const Proportions& prop) {
     // Idle wiggle: rock the whole ear about its attachment in the image plane.
     if (wiggle != 0.f) {
         Matx33f Rw = rotZ(side * wiggle);
-        Vec3f pivot = (A + B) * 0.5f;
+        Vec3f pivot = attach;
         for (auto& p : m.pos) p = rotAbout(Rw, p, pivot);
     }
     m.computeNormals();
@@ -438,15 +589,17 @@ void raster(const Mesh& m, const Pose& ps, float ssScale, cv::Point2f ssOrg,
 } // namespace
 
 void render(cv::Mat& frame, const cv::Rect& face, bool hasEyes,
-            cv::Point2f leftEye, cv::Point2f rightEye, double phase) {
+            cv::Point2f leftEye, cv::Point2f rightEye, double phase,
+            Species species) {
     Head h;
     h.hasEyes = hasEyes;
     h.leftEye = leftEye;
     h.rightEye = rightEye;
-    render(frame, face, h, phase);
+    render(frame, face, h, phase, species);
 }
 
-void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase) {
+void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase,
+            Species species) {
     if (frame.empty() || frame.type() != CV_8UC3) return;
     if (face.width < 40 || face.height < 40) return;
 
@@ -455,10 +608,11 @@ void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase
 
     float wig = 0.05f * std::sin((float)phase * 0.11f);
     std::vector<Mesh> meshes;
-    meshes.push_back(buildEar(-1.f, wig, head.prop));
-    meshes.push_back(buildEar(+1.f, wig, head.prop));
-    meshes.push_back(buildSnout(head.prop));
-    meshes.push_back(buildNostrils(head.prop));
+    const Style st = styleFor(species);
+    meshes.push_back(buildEar(-1.f, wig, head.prop, st));
+    meshes.push_back(buildEar(+1.f, wig, head.prop, st));
+    meshes.push_back(buildMuzzle(head.prop, st));
+    meshes.push_back(buildNose(head.prop, st));
 
     // Image-space bounding box of every projected vertex -> the region we touch.
     float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
@@ -506,4 +660,4 @@ void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase
     }
 }
 
-} // namespace olc::pig3d
+} // namespace olc::animal3d

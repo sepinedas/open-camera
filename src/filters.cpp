@@ -18,7 +18,7 @@
 #include "mediapipe/tasks/cc/vision/face_landmarker/face_landmarker.h"
 #include "mediapipe/tasks/cc/vision/face_landmarker/face_landmarker_result.h"
 
-#include "pig3d.hpp"
+#include "animal3d.hpp"
 
 namespace olc {
 
@@ -641,13 +641,19 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
     //
     // The pig-face ears rise well above the head and the snout/cheeks spread to
     // the sides, so that filter needs a noticeably larger margin than the warps.
-    const bool pig = (filter == Filter::PigFace);
+    // Both animal rigs put geometry well outside the face box -- ears above
+    // the head, a muzzle in front of the nose -- so they need a far larger
+    // margin than the warps. The dog's ears hang lower and its muzzle is
+    // longer, so it gets the most generous bottom margin.
+    const bool animal = (filter == Filter::PigFace || filter == Filter::DogFace);
+    const bool dog = (filter == Filter::DogFace);
     cv::Rect uni;
     for (const Face& face : faces_) {
         const cv::Rect& f = face.box;
-        int mx = pig ? std::max(10, f.width * 9 / 10) : std::max(8, f.width * 2 / 5);
-        int mtop = pig ? std::max(10, f.height) : std::max(6, f.height * 3 / 10);
-        int mbot = pig ? std::max(10, f.height * 2 / 5) : std::max(8, f.height / 2);
+        int mx = animal ? std::max(10, f.width * 9 / 10) : std::max(8, f.width * 2 / 5);
+        int mtop = animal ? std::max(10, f.height) : std::max(6, f.height * 3 / 10);
+        int mbot = animal ? std::max(10, f.height * (dog ? 9 : 4) / 10)
+                          : std::max(8, f.height / 2);
         cv::Rect r(f.x - mx, f.y - mtop, f.width + 2 * mx, f.height + mtop + mbot);
         uni = (uni.area() == 0) ? r : (uni | r);
     }
@@ -674,7 +680,9 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
         } else if (filter == Filter::Crying) {
             applyCry(roi, f, off, phase);
         } else if (filter == Filter::PigFace) {
-            applyPig(roi, f, off, phase);
+            applyAnimal(roi, f, off, phase, animal3d::Species::Pig);
+        } else if (filter == Filter::DogFace) {
+            applyAnimal(roi, f, off, phase, animal3d::Species::Dog);
         }
     }
 }
@@ -808,16 +816,16 @@ void FaceFilter::applyCry(cv::Mat& frame, const Face& f, cv::Point2f off,
     drawTears(frame, f, off, phase);
 }
 
-void FaceFilter::applyPig(cv::Mat& frame, const Face& f, cv::Point2f off,
-                          double phase) const {
-    // The pig is a set of real 3D meshes (ears + snout) rendered through a
-    // perspective camera by pig3d. Keeping the graphics three-dimensional is
+void FaceFilter::applyAnimal(cv::Mat& frame, const Face& f, cv::Point2f off,
+                             double phase, animal3d::Species species) const {
+    // The animal is a set of real 3D meshes (ears + muzzle) rendered through a
+    // perspective camera by animal3d. Keeping the graphics three-dimensional is
     // what makes them share the face's orientation and perspective -- the snout
     // protrudes and foreshortens, the ears swing around and occlude behind the
     // head as it turns -- instead of looking like flat stickers. The face mesh
     // supplies the pose, so the pig follows a turned or tipped head properly
     // rather than guessing from a pair of eye boxes inside a detector box.
-    pig3d::Head head;
+    animal3d::Head head;
     head.hasEyes = true;
     head.leftEye = f.eyeL - off;
     head.rightEye = f.eyeR - off;
@@ -830,15 +838,16 @@ void FaceFilter::applyPig(cv::Mat& frame, const Face& f, cv::Point2f off,
     head.prop.headHalfW = f.headHalfW;
     const cv::Rect box(f.box.x - (int)off.x, f.box.y - (int)off.y, f.box.width,
                        f.box.height);
-    pig3d::render(frame, box, head, phase);
+    animal3d::render(frame, box, head, phase, species);
 }
 
-void FaceFilter::drawPigPreview(cv::Mat& frame, const cv::Rect& face,
-                                cv::Point2f leftEye, cv::Point2f rightEye,
-                                double phase) const {
+void FaceFilter::drawAnimalPreview(cv::Mat& frame, const cv::Rect& face,
+                                   cv::Point2f leftEye, cv::Point2f rightEye,
+                                   double phase,
+                                   animal3d::Species species) const {
     if (frame.empty() || frame.type() != CV_8UC3) return;
     const bool hasEyes = (leftEye.x >= 0.f && rightEye.x >= 0.f);
-    pig3d::render(frame, face, hasEyes, leftEye, rightEye, phase);
+    animal3d::render(frame, face, hasEyes, leftEye, rightEye, phase, species);
 }
 
 Filter nextFilter(Filter f) {
@@ -846,7 +855,8 @@ Filter nextFilter(Filter f) {
         case Filter::None:     return Filter::BigSmile;
         case Filter::BigSmile: return Filter::Crying;
         case Filter::Crying:   return Filter::PigFace;
-        case Filter::PigFace:  return Filter::None;
+        case Filter::PigFace:  return Filter::DogFace;
+        case Filter::DogFace:  return Filter::None;
     }
     return Filter::None;
 }
@@ -857,6 +867,7 @@ const char* filterName(Filter f) {
         case Filter::BigSmile: return "Big Smile";
         case Filter::Crying:   return "Crying";
         case Filter::PigFace:  return "Pig Face";
+        case Filter::DogFace:  return "Dog Face";
     }
     return "";
 }

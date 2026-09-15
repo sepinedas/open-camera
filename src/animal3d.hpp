@@ -12,7 +12,13 @@
 // foreshortens, and the ears swing around and occlude behind the head exactly as
 // the head turns -- they share the face's orientation and perspective instead of
 // looking like decals.
-namespace olc::pig3d {
+namespace olc::animal3d {
+
+// Which animal to build. The rig -- head pose, perspective camera, z-buffer,
+// shading -- is identical for both; only the muzzle and ear geometry and the
+// colours differ, so they are described by data rather than by a second
+// renderer (see Style in the .cpp).
+enum class Species { Pig, Dog };
 
 // Where this particular face's features actually sit, measured from the
 // MediaPipe mesh. All values are in *eye-separation units* in the head's own
@@ -58,11 +64,13 @@ struct Head {
 //   face   face bounding box, image coords (roi-local when called per-region)
 //   head   measured head landmarks/pose (see above)
 //   phase  free-running frame counter; drives a subtle ear wiggle
-void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase);
+void render(cv::Mat& frame, const cv::Rect& face, const Head& head, double phase,
+            Species species = Species::Pig);
 
 // Convenience overload for callers that only have the two eye centres (the
 // mockup/preview tools). Pass hasEyes=false to orient from the box alone.
 void render(cv::Mat& frame, const cv::Rect& face, bool hasEyes,
-            cv::Point2f leftEye, cv::Point2f rightEye, double phase);
+            cv::Point2f leftEye, cv::Point2f rightEye, double phase,
+            Species species = Species::Pig);
 
-} // namespace olc::pig3d
+} // namespace olc::animal3d

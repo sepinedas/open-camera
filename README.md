@@ -39,8 +39,8 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
   and adds animated falling **tears**. These two *reshape the face in place* (its
   own pixels warped), not covered with cartoon graphics — only the tears are
   drawn on top.
-- A **Pig Face** filter built from actual **3D models** — mesh ears and a
-  protruding snout with two nostrils — rendered through a **perspective camera**
+- **Pig Face** and **Dog Face** filters built from actual **3D models** — mesh
+  ears and a protruding muzzle — rendered through a **perspective camera**
   by a tiny built-in software renderer (z-buffer + shading + anti-aliasing). The
   head's **pose** (roll / yaw / pitch) is measured from MediaPipe's **478-point
   face mesh** — irises, nose tip, cheeks and chin — so the models **share the
@@ -72,7 +72,7 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
 | Headless — no X11 / window manager | SDL2 `kmsdrm`/`fbcon` renders directly to HDMI |
 | WhatsApp-style facial filters | `FaceFilter` runs MediaPipe's Face Landmarker and warps the real mouth/brow landmarks with `cv::remap`; the crying filter also draws tears (`filters.cpp`) |
 | Battery monitor | `Battery` reads the Waveshare UPS HAT (D)'s INA219 over I²C (`battery.cpp`) and `drawBattery` paints the corner gauge (`icons.cpp`) |
-| Pig-face filter (real 3D models) | `FaceFilter` measures head roll/yaw/pitch from the MediaPipe face mesh; `pig3d` rasterises 3D ear/snout meshes through a perspective camera (z-buffer, Gouraud shading, supersampled AA) so they follow the face's orientation and perspective (`pig3d.cpp`) |
+| Animal-face filters (real 3D models) | `FaceFilter` measures head roll/yaw/pitch *and facial proportions* from the MediaPipe face mesh; `animal3d` rasterises 3D ear/muzzle meshes through a perspective camera (z-buffer, Gouraud shading, supersampled AA) so they follow the face's orientation and perspective. Pig and dog share one renderer and differ only by a table of geometry and colours (`animal3d.cpp`) |
 
 ## Dependencies
 
@@ -277,7 +277,8 @@ build/open-lego-camera [options]
 ### Facial filters
 
 Tap the **smiley** button in the camera menu to cycle the live
-facial filter: **Big Smile** → **Crying** → **Pig Face** → off. The active
+facial filter: **Big Smile** → **Crying** → **Pig Face** → **Dog Face** → off.
+The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
 
@@ -287,16 +288,21 @@ you then capture.
   off so the result does not go rubbery.
 - **Crying** curls your mouth down into a frown, pinches your inner brows down,
   and streams animated tears down your cheeks.
-- **Pig Face** overlays real **3D models** — mesh ears and a protruding snout
-  with two nostrils. They are shaded by a directional light and composited with
-  a z-buffer, so the snout genuinely bulges toward you and the far ear can pass
-  behind the head. The ears give a gentle idle wiggle.
+- **Pig Face** overlays real **3D models** — triangular ears standing off the
+  crown and a short snout flaring into a flat disc with two nostrils.
+- **Dog Face** uses the same rig with a different build: a longer muzzle that
+  *tapers* to a domed, glossy black nose, and big soft ears that hang down past
+  the eye line instead of standing up.
+
+Both are shaded by a directional light and composited with a z-buffer, so the
+muzzle genuinely bulges toward you and the far ear can pass behind the head.
+The ears give a gentle idle wiggle.
 
 The first two filters *warp your actual face* — no cartoon mouth or eyes are
 pasted on top; only the crying tears are drawn over the image.
 
-**Following the head's orientation and perspective.** The pig is not a flat
-overlay: `pig3d` orients the meshes by the head's 3D pose and renders them
+**Following the head's orientation and perspective.** These are not flat
+overlays: `animal3d` orients the meshes by the head's 3D pose and renders them
 through a perspective camera, so they turn and foreshorten with the head. All
 three angles are measured from the MediaPipe face mesh:
 
@@ -314,15 +320,16 @@ the whole rig **rolls, turns, foreshortens and occludes with your head** and doe
 not read as a sticker.
 
 **Fitted to your face, not just aimed at it.** The meshes are also *built* from
-the mesh rather than at fixed proportions, so the pig matches the face it is
-drawn on:
+the face mesh rather than at fixed proportions, so the animal matches the face
+it is drawn on:
 
-- the **snout** sits at your measured nose height and is sized from your alar
+- the **muzzle** sits at your measured nose height and is sized from your alar
   (nostril) width — previously it was pinned 0.32 eye-separations below the eye
   line, but a real nose tip is nearer 0.65, which is why the snout used to ride
   high on the bridge;
-- the **nostrils** are derived from the snout's own frame, so they cannot drift
-  off the pad when it moves or resizes;
+- the **nose** (the pig's nostrils, the dog's leather) is derived from the
+  muzzle's own frame, so it cannot drift off the end when that moves or
+  resizes;
 - the **ears** attach at your measured temples and crown, so they sit on the
   silhouette of a narrow or a wide head instead of always the same width.
 
@@ -335,7 +342,7 @@ human range, so a blown landmark nudges the pig rather than deforming it.
 
 The 3D rendering is a small self-contained software rasteriser — no GPU
 involved — and MediaPipe's inference is CPU/TFLite, which keeps the whole thing
-comfortable alongside 30 fps preview on a Pi 5. The `tools/pig_preview.cpp`
+comfortable alongside 30 fps preview on a Pi 5. The `tools/animal_preview.cpp`
 helper renders the pig at several angles (the image above) without a camera or
 a model file, for a quick look.
 
