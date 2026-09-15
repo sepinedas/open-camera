@@ -105,6 +105,10 @@ private:
         cv::Point2f right, down;    // unit vectors along / across the eye line
         float open = 0.f;           // 0..1 how far the jaw is open
         float smile = 0.f;          // 0..1 how much the mouth already grins
+        // Every landmark, in frame coordinates. Only the mesh filter needs the
+        // whole set -- the warps work from the handful resolved above -- so
+        // this is the one place the full mesh is kept.
+        std::vector<cv::Point2f> mesh;
     };
 
     // MediaPipe landmarker + the scratch buffers it needs; defined in the .cpp
@@ -126,6 +130,9 @@ private:
                      cv::Point2f lipTop, cv::Point2f lipBot, float strength) const;
     // Draw the falling tears of the crying filter.
     void drawTears(cv::Mat& frame, const Face& f, cv::Point2f off, double phase) const;
+    // Draw the tracked landmarks as dots joined by the edges of a Delaunay
+    // triangulation over them: the wireframe-over-the-face look.
+    void applyFaceMesh(cv::Mat& frame, const Face& f, cv::Point2f off) const;
 
     std::unique_ptr<Landmarker> lm_;
     bool warned_ = false;     // "no model" logged only once

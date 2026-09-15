@@ -17,6 +17,7 @@
 #include "mediapipe/tasks/cc/vision/core/running_mode.h"
 #include "mediapipe/tasks/cc/vision/face_landmarker/face_landmarker.h"
 #include "mediapipe/tasks/cc/vision/face_landmarker/face_landmarker_result.h"
+#include "mediapipe/tasks/cc/vision/face_landmarker/face_landmarks_connections.h"
 
 
 namespace olc {
@@ -44,6 +45,20 @@ constexpr int kMaxFaces = 4; // per-face mesh inference is cheap enough here
 // increase; the exact value just has to be plausible for its tracking.
 constexpr int64_t kFrameIntervalMs = 33;
 constexpr double kTearSpeed = 0.019; // tear cycle progress per frame (fall speed)
+
+// Face-mesh overlay styling. The whole wireframe is drawn into one scratch
+// copy and blended back in a single pass, so the alpha costs one addWeighted
+// rather than one per edge.
+const cv::Scalar kMeshEdge(170, 235, 110);    // BGR: cool green, reads on skin
+const cv::Scalar kMeshFeature(120, 245, 245); // contours, picked out brighter
+const cv::Scalar kMeshDot(245, 255, 245);
+constexpr double kMeshAlpha = 0.80;
+
+// The mesh's connectivity comes from MediaPipe itself -- the same tables its
+// own renderers use -- rather than being re-derived here. kFaceLandmarksTesselation
+// is the full 2556-edge triangle net; the feature tables are the contours
+// (lips, eyes, brows, irises, face oval) drawn over it in a second colour.
+using MpConn = mpv::face_landmarker::FaceLandmarksConnections;
 
 // --- MediaPipe canonical face-mesh indices --------------------------------
 // The mesh is the standard 468-point topology, plus the two 5-point irises
@@ -457,6 +472,10 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
         f.lipTop = P(kLipInnerTop);
         f.lipBot = P(kLipInnerBot);
 
+        // The mesh filter draws all of them, so keep the whole set.
+        f.mesh.reserve(mesh.size());
+        for (int k = 0; k < (int)mesh.size(); ++k) f.mesh.push_back(P(k));
+
         // Head axes from the eye line: `right` runs ear-to-ear, `down` toward
         // the chin. Everything below is expressed in those, so the filters
         // follow a tilted head instead of the image axes.
@@ -528,9 +547,13 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
     cv::Rect uni;
     for (const Face& face : faces_) {
         const cv::Rect& f = face.box;
-        int mx = std::max(8, f.width * 2 / 5);
-        int mtop = std::max(6, f.height * 3 / 10);
-        int mbot = std::max(8, f.height / 2);
+        // The mesh is drawn on the landmarks themselves, so it needs only a
+        // couple of pixels for the dot radius and line width -- nothing like
+        // the margin the warps need for their Gaussian falloff and tears.
+        const bool meshOnly = (filter == Filter::FaceMesh);
+        int mx = meshOnly ? 3 : std::max(8, f.width * 2 / 5);
+        int mtop = meshOnly ? 3 : std::max(6, f.height * 3 / 10);
+        int mbot = meshOnly ? 3 : std::max(8, f.height / 2);
         cv::Rect r(f.x - mx, f.y - mtop, f.width + 2 * mx, f.height + mtop + mbot);
         uni = (uni.area() == 0) ? r : (uni | r);
     }
@@ -556,6 +579,8 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applySmile(roi, f, off);
         } else if (filter == Filter::Crying) {
             applyCry(roi, f, off, phase);
+        } else if (filter == Filter::FaceMesh) {
+            applyFaceMesh(roi, f, off);
         }
     }
 }
@@ -689,11 +714,65 @@ void FaceFilter::applyCry(cv::Mat& frame, const Face& f, cv::Point2f off,
     drawTears(frame, f, off, phase);
 }
 
+void FaceFilter::applyFaceMesh(cv::Mat& frame, const Face& f,
+                               cv::Point2f off) const {
+    // The tessellation indexes the 468-point topology; the iris rings need the
+    // full 478. Anything shorter is not a mesh this can draw.
+    if ((int)f.mesh.size() < 468) return;
+
+    cv::Rect b(f.box.x - (int)off.x - 2, f.box.y - (int)off.y - 2,
+               f.box.width + 4, f.box.height + 4);
+    b &= cv::Rect(0, 0, frame.cols, frame.rows);
+    if (b.width < 8 || b.height < 8) return;
+
+    // Draw the whole wireframe into one scratch copy and blend it back once.
+    // Blending per edge (the way the tears do) would clone the ROI 2556 times.
+    cv::Mat roi = frame(b);
+    cv::Mat ov = roi.clone();
+    const cv::Point org = b.tl();
+    const cv::Rect local(0, 0, b.width, b.height);
+    const int n = (int)f.mesh.size();
+
+    auto at = [&](int idx) {
+        const cv::Point2f q = f.mesh[idx] - off;
+        return cv::Point((int)std::lround(q.x) - org.x,
+                         (int)std::lround(q.y) - org.y);
+    };
+    auto drawEdges = [&](const auto& table, const cv::Scalar& col) {
+        for (const auto& e : table) {
+            if (e[0] >= n || e[1] >= n) continue; // shorter mesh than the table
+            const cv::Point a = at(e[0]), c = at(e[1]);
+            // A face at the edge of the crop has landmarks outside it.
+            if (!local.contains(a) || !local.contains(c)) continue;
+            cv::line(ov, a, c, col, 1, cv::LINE_AA);
+        }
+    };
+
+    drawEdges(MpConn::kFaceLandmarksTesselation, kMeshEdge);
+    // Contours over the top, so the features stay legible through the net.
+    drawEdges(MpConn::kFaceLandmarksFaceOval, kMeshFeature);
+    drawEdges(MpConn::kFaceLandmarksLips, kMeshFeature);
+    drawEdges(MpConn::kFaceLandmarksLeftEye, kMeshFeature);
+    drawEdges(MpConn::kFaceLandmarksRightEye, kMeshFeature);
+    drawEdges(MpConn::kFaceLandmarksLeftEyeBrow, kMeshFeature);
+    drawEdges(MpConn::kFaceLandmarksRightEyeBrow, kMeshFeature);
+    drawEdges(MpConn::kFaceLandmarksLeftIris, kMeshFeature);
+    drawEdges(MpConn::kFaceLandmarksRightIris, kMeshFeature);
+
+    for (int i = 0; i < n; ++i) {
+        const cv::Point d = at(i);
+        if (!local.contains(d)) continue;
+        cv::circle(ov, d, 1, kMeshDot, cv::FILLED, cv::LINE_AA);
+    }
+    cv::addWeighted(ov, kMeshAlpha, roi, 1.0 - kMeshAlpha, 0.0, roi);
+}
+
 Filter nextFilter(Filter f) {
     switch (f) {
         case Filter::None:     return Filter::BigSmile;
         case Filter::BigSmile: return Filter::Crying;
-        case Filter::Crying:   return Filter::None;
+        case Filter::Crying:   return Filter::FaceMesh;
+        case Filter::FaceMesh: return Filter::None;
     }
     return Filter::None;
 }
@@ -703,6 +782,7 @@ const char* filterName(Filter f) {
         case Filter::None:     return "Filter Off";
         case Filter::BigSmile: return "Big Smile";
         case Filter::Crying:   return "Crying";
+        case Filter::FaceMesh: return "Face Mesh";
     }
     return "";
 }

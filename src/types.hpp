@@ -35,13 +35,14 @@ enum class Action {
     Quit,
 };
 
-// Live facial-expression filter applied to the camera preview (and captures).
-// The face is reshaped in place rather than having graphics drawn over it; only
-// the crying filter's tears are drawn on top.
+// Live filter applied to the camera preview (and captures). The expression
+// filters reshape the face in place rather than having graphics drawn over it;
+// only the crying filter's tears, and the face-mesh overlay, are drawn on top.
 enum class Filter {
     None,
     BigSmile, // mouth stretched into a wide grin; teeth pop when it opens
     Crying,   // mouth/brows pulled into a frown, with falling tears
+    FaceMesh, // the tracked landmarks drawn over the face as dots and edges
 };
 
 } // namespace olc

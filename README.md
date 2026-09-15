@@ -264,8 +264,9 @@ build/open-lego-camera [options]
 ### Facial filters
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
-**Big Smile** → **Crying** → off. The active filter's name appears briefly on
-screen, and the effect is baked into any photo you then capture.
+**Big Smile** → **Crying** → **Face Mesh** → off. The active filter's name
+appears briefly on screen, and the effect is baked into any photo you then
+capture.
 
 - **Big Smile** stretches your mouth's corners up and out into a wide grin and
   opens it vertically; the more you open your mouth, the more your teeth are
@@ -273,14 +274,26 @@ screen, and the effect is baked into any photo you then capture.
   off so the result does not go rubbery.
 - **Crying** curls your mouth down into a frown, pinches your inner brows down,
   and streams animated tears down your cheeks.
+- **Face Mesh** draws the tracking itself: every landmark as a dot, joined by
+  MediaPipe's **own** 2556-edge tessellation, with the feature contours (face
+  oval, eyes, brows, irises, lips) picked out over the top in a second colour.
 
-The filters *warp your actual face* — no cartoon mouth or eyes are pasted on
+The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
 
 **Following the head's own axes.** The eye line from the MediaPipe mesh gives
 the in-plane roll and the scale, and every displacement is applied along those
 axes rather than the image's, so a tilted head is reshaped along the face
 instead of along the screen.
+
+**The mesh filter's connectivity is MediaPipe's, not ours.** The edge tables
+come from `face_landmarks_connections.h` in the Tasks headers — the same ones
+its own renderers use — so the wireframe is the canonical topology rather than
+a triangulation re-derived here. The whole overlay is drawn into one scratch
+copy and blended back in a single pass: at ~2700 edges per face, alpha-blending
+each line separately would clone the region thousands of times per frame. It is
+the most drawing-heavy filter, and unlike the warps its cost scales with the
+number of landmarks rather than the face's size on screen.
 
 ### Rotating the display
 
