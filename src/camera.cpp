@@ -279,16 +279,35 @@ cv::Mat Camera::nv12ToBGRScaled(const cv::Mat& nv12, int targetW) {
 void Camera::bgrIntoNV12(const cv::Mat& bgr, cv::Mat& nv12, cv::Point at) {
     if (bgr.empty() || bgr.type() != CV_8UC3) return;
     const int H = nv12.rows * 2 / 3;
-    cv::Mat yuv;
-    cv::cvtColor(bgr, yuv, cv::COLOR_BGR2YUV); // BT.601, matching YUV2BGR_NV12
-    cv::Mat ch[3];
-    cv::split(yuv, ch);
+    // This has to be the exact inverse of nv12CropToBGR's COLOR_YUV2BGR_NV12,
+    // which is *limited range* (Y 16..235, the video convention the camera
+    // delivers and the GPU assumes when it converts the whole frame at blit
+    // time). COLOR_BGR2YUV is full range, so round tripping through the pair
+    // stretched contrast -- shadows up to ~13 levels darker, highlights ~20
+    // brighter. Only the filtered region made that trip, so the dirty
+    // rectangle stopped matching the pixels around it and showed up as a dark
+    // frame around the face.
+    //
+    // YCrCb rather than YUV: OpenCV's COLOR_BGR2YUV uses the analog 0.492/0.877
+    // weights, which would need a *different* rescale per chroma channel
+    // (x1.007 and x0.714). YCrCb's 0.564/0.713 weights both come out at
+    // 224/255, so one factor serves both and the inverse is exact.
+    constexpr double kYScale = 219.0 / 255.0;
+    constexpr double kCScale = 224.0 / 255.0;
+    cv::Mat ycc;
+    cv::cvtColor(bgr, ycc, cv::COLOR_BGR2YCrCb);
+    cv::Mat ch[3]; // Y, Cr, Cb -- note NV12 interleaves Cb first
+    cv::split(ycc, ch);
+    ch[0].convertTo(ch[0], CV_8U, kYScale, 16.0);
+    ch[1].convertTo(ch[1], CV_8U, kCScale, 128.0 * (1.0 - kCScale));
+    ch[2].convertTo(ch[2], CV_8U, kCScale, 128.0 * (1.0 - kCScale));
+
     // Y plane straight in.
     ch[0].copyTo(nv12(cv::Rect(at.x, at.y, bgr.cols, bgr.rows)));
-    // U and V averaged down 2x (INTER_AREA) and interleaved into UV bytes.
+    // Chroma averaged down 2x (INTER_AREA) and interleaved as U,V = Cb,Cr.
     cv::Mat u2, v2;
-    cv::resize(ch[1], u2, cv::Size(bgr.cols / 2, bgr.rows / 2), 0, 0, cv::INTER_AREA);
-    cv::resize(ch[2], v2, cv::Size(bgr.cols / 2, bgr.rows / 2), 0, 0, cv::INTER_AREA);
+    cv::resize(ch[2], u2, cv::Size(bgr.cols / 2, bgr.rows / 2), 0, 0, cv::INTER_AREA);
+    cv::resize(ch[1], v2, cv::Size(bgr.cols / 2, bgr.rows / 2), 0, 0, cv::INTER_AREA);
     std::vector<cv::Mat> planes{u2, v2};
     cv::Mat uv;
     cv::merge(planes, uv);                  // CV_8UC2, UVUV interleaved
