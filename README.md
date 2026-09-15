@@ -295,10 +295,12 @@ instead of along the screen.
 **The mesh filters' connectivity is MediaPipe's, not ours.** The edge tables
 come from `face_landmarks_connections.h` in the Tasks headers — the same ones
 its own renderers use — so the wireframe is the canonical topology rather than
-a triangulation re-derived here. The whole overlay is drawn into one scratch
-copy and blended back in a single pass: at ~2700 edges per face, alpha-blending
-each line separately would clone the region thousands of times per frame. It is
-the most drawing-heavy filter, and unlike the warps its cost scales with the
+a triangulation re-derived here. Both mesh filters draw straight onto the
+frame. They used to accumulate into a scratch copy of the region and blend it
+back for translucency, which cost a region-sized allocation and two extra
+passes over every pixel, every frame, per face — for an effect that at 80–88%
+opacity was barely visible. It is the most drawing-heavy filter, and unlike the
+warps its cost scales with the
 number of landmarks rather than the face's size on screen.
 
 **Dog Face is the same mesh, filled instead of outlined.** MediaPipe stores the

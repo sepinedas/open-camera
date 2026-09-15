@@ -48,13 +48,11 @@ constexpr int kMaxFaces = 4; // per-face mesh inference is cheap enough here
 constexpr int64_t kFrameIntervalMs = 33;
 constexpr double kTearSpeed = 0.019; // tear cycle progress per frame (fall speed)
 
-// Face-mesh overlay styling. The whole wireframe is drawn into one scratch
-// copy and blended back in a single pass, so the alpha costs one addWeighted
-// rather than one per edge.
+// Face-mesh overlay styling. Drawn directly onto the frame, so the colours
+// below are what lands on screen.
 const cv::Scalar kMeshEdge(170, 235, 110);    // BGR: cool green, reads on skin
 const cv::Scalar kMeshFeature(120, 245, 245); // contours, picked out brighter
 const cv::Scalar kMeshDot(245, 255, 245);
-constexpr double kMeshAlpha = 0.80;
 
 // The mesh's connectivity comes from MediaPipe itself -- the same tables its
 // own renderers use -- rather than being re-derived here. kFaceLandmarksTesselation
@@ -94,7 +92,6 @@ float dot(const cv::Point2f& a, const cv::Point2f& b) { return a.x * b.x + a.y *
 // image-right eye, +v toward the chin. Working here rather than in pixels is
 // what makes the markings track the face -- they are placed relative to the
 // eyes and nose, so they hold through scale, roll, turn and expression.
-constexpr double kDogAlpha = 0.88;
 const cv::Vec3f kDogBase(74, 132, 190);    // BGR: tan coat
 const cv::Vec3f kDogMask(38, 64, 104);     // darker patches around the eyes
 const cv::Vec3f kDogMuzzle(226, 238, 248); // pale muzzle and brow blaze
@@ -833,10 +830,11 @@ void FaceFilter::applyFaceMesh(cv::Mat& frame, const Face& f,
     b &= cv::Rect(0, 0, frame.cols, frame.rows);
     if (b.width < 8 || b.height < 8) return;
 
-    // Draw the whole wireframe into one scratch copy and blend it back once.
-    // Blending per edge (the way the tears do) would clone the ROI 2556 times.
-    cv::Mat roi = frame(b);
-    cv::Mat ov = roi.clone();
+    // Drawn straight onto the frame. An earlier version accumulated into a
+    // scratch copy of the region and blended it back once, to get a translucent
+    // wireframe; that cost a full copy of the region every frame, per face, and
+    // at 80% opacity bought almost nothing.
+    cv::Mat ov = frame(b);
     const cv::Point org = b.tl();
     const cv::Rect local(0, 0, b.width, b.height);
     const int n = (int)f.mesh.size();
@@ -872,7 +870,6 @@ void FaceFilter::applyFaceMesh(cv::Mat& frame, const Face& f,
         if (!local.contains(d)) continue;
         cv::circle(ov, d, 1, kMeshDot, cv::FILLED, cv::LINE_AA);
     }
-    cv::addWeighted(ov, kMeshAlpha, roi, 1.0 - kMeshAlpha, 0.0, roi);
 }
 
 // Read the head's orientation straight off the mesh. Three landmarks give the
@@ -953,8 +950,11 @@ void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
     b &= cv::Rect(0, 0, frame.cols, frame.rows);
     if (b.width < 8 || b.height < 8) return;
 
-    cv::Mat roi = frame(b);
-    cv::Mat ov = roi.clone();
+    // Straight onto the frame: the tessellation tiles the face without gaps,
+    // so the paint is opaque anyway and the scratch copy it used to accumulate
+    // into was pure cost -- a region-sized allocation and two extra passes over
+    // every pixel, every frame.
+    cv::Mat ov = frame(b);
     const cv::Point org = b.tl();
     const cv::Point2f eyeMid = (f.eyeL + f.eyeR) * 0.5f - off;
     const float invEye = 1.f / eyeSep;
@@ -979,8 +979,6 @@ void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
         const cv::Vec3f col[3] = {vcol[ia], vcol[ib], vcol[ic]};
         fillTriangleSmooth(ov, tri, col);
     }
-    cv::addWeighted(ov, kDogAlpha, roi, 1.0 - kDogAlpha, 0.0, roi);
-
     // Ears and nose on top, as real geometry. They cannot come from the face
     // mesh -- it stops at the face -- so they are oriented by a basis measured
     // from it in 3D instead.
