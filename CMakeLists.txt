@@ -109,7 +109,6 @@ add_executable(open-lego-camera
   src/icons.cpp
   src/ui.cpp
   src/filters.cpp
-  src/animal3d.cpp
   src/app.cpp
 )
 
@@ -144,7 +143,7 @@ target_compile_options(open-lego-camera PRIVATE ${SDL2_GFX_CFLAGS_OTHER} -Wall -
 # The target is a Pi 5 (BCM2712, Cortex-A76 @ 2.4 GHz). Naming the core lets the
 # compiler assume the ARMv8.2-A baseline -- dot product, FP16 arithmetic, LSE
 # atomics -- instead of the generic ARMv8-A that plain aarch64 targets, which
-# matters most in the per-pixel loops (the warp map, the pig rasteriser).
+# matters most in the per-pixel loops (above all the warp map).
 #
 # The resulting binary will NOT run on a Pi 4, Pi 3 or Zero 2 W: those are
 # Cortex-A72/A53 and fault with SIGILL. Turn this off for a portable build.

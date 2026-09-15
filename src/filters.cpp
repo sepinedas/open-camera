@@ -18,7 +18,6 @@
 #include "mediapipe/tasks/cc/vision/face_landmarker/face_landmarker.h"
 #include "mediapipe/tasks/cc/vision/face_landmarker/face_landmarker_result.h"
 
-#include "animal3d.hpp"
 
 namespace olc {
 
@@ -52,57 +51,16 @@ constexpr double kTearSpeed = 0.019; // tear cycle progress per frame (fall spee
 // "right" here are the *subject's*, which is how MediaPipe labels them; they
 // are resolved into on-screen order in detect() so a mirrored preview works.
 constexpr int kMeshWithIris = 478;
-constexpr int kNoseTip = 1;
-constexpr int kChin = 152;
-constexpr int kForehead = 10;
-constexpr int kCheekR = 234, kCheekL = 454; // face-oval extremes
 constexpr int kMouthR = 61, kMouthL = 291;  // mouth corners
 constexpr int kLipInnerTop = 13, kLipInnerBot = 14;
 constexpr int kBrowInnerR = 107, kBrowInnerL = 336;
 constexpr int kIrisR = 468, kIrisL = 473;
-constexpr int kAlarR = 48, kAlarL = 278;     // nose wings -> snout width
-constexpr int kTempleR = 127, kTempleL = 356; // head sides -> ear attachment
 constexpr int kEyeROuter = 33, kEyeRInner = 133, kEyeRUp = 159, kEyeRLow = 145;
 constexpr int kEyeLOuter = 263, kEyeLInner = 362, kEyeLUp = 386, kEyeLLow = 374;
 // Size of the base topology. Every index above lives inside it (the highest is
 // the face-oval cheek at 454), so a shorter mesh is not the topology this code
 // understands and is skipped rather than read out of bounds.
 constexpr int kMeshMin = 468;
-
-// How strongly the measured landmark asymmetries map onto head rotation. Both
-// are approximations of a full 3D pose fit, calibrated so a head turned or
-// tipped ~30 degrees produces roughly that much rotation on the pig.
-constexpr float kYawGain = 1.5f;
-constexpr float kPitchGain = 3.5f;
-// Where the eye line sits between the forehead and the chin on a level head.
-constexpr float kNeutralEyeT = 0.42f;
-
-// Plausible bounds for the measured facial proportions the pig is built from,
-// in eye-separation units. A blown landmark (or an extreme pose the
-// foreshortening correction cannot undo) should nudge the rig, never deform
-// it, so every measurement is clamped into human range.
-constexpr float kNoseYMin = 0.40f, kNoseYMax = 0.95f;
-constexpr float kNoseHalfWMin = 0.15f, kNoseHalfWMax = 0.50f;
-constexpr float kCrownYMin = -1.40f, kCrownYMax = -0.45f;
-constexpr float kHeadHalfWMin = 0.80f, kHeadHalfWMax = 1.80f;
-// Weight of the new measurement when blending with the previous frame's.
-// Anatomy is constant, so this only needs to track a face arriving or moving.
-constexpr float kPropBlend = 0.25f;
-
-// Turning or nodding foreshortens the face, and a simple cos() correction is
-// not enough for a feature that *protrudes*: pitching the head rotates the
-// nose's depth into its projected height, so at 20 degrees of nod the nose
-// reads ~20% too low on the face. Correcting properly needs the feature's
-// depth-to-height ratio in the head frame, which for a given landmark is
-// near-constant across faces. These are measured off the canonical face model:
-// the nose tip stands well forward of the eye plane, the forehead barely.
-constexpr float kNoseDepthRatio = -0.54f;
-constexpr float kCrownDepthRatio = 0.06f;
-// Past these angles the small-rotation model behind that correction breaks
-// down (at 45 degrees of yaw it is ~27% out), so the proportions simply hold
-// their last good value -- anatomy does not change while you turn your head.
-constexpr float kMeasureMaxYaw = 0.55f;   // ~31 degrees
-constexpr float kMeasureMaxPitch = 0.45f; // ~26 degrees
 
 // Where a packaged Face Landmarker bundle is looked for, in order. The
 // media-pipe-builder .deb installs under a versioned /opt/mediapipe/<ver> and
@@ -496,7 +454,6 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
         std::tie(f.mouthL, f.mouthR) = ordered(P(kMouthR), P(kMouthL));
         std::tie(f.browL, f.browR) = ordered(P(kBrowInnerR), P(kBrowInnerL));
         std::tie(f.lidL, f.lidR) = ordered(P(kEyeRLow), P(kEyeLLow));
-        const auto [cheekL, cheekR] = ordered(P(kCheekR), P(kCheekL));
         f.lipTop = P(kLipInnerTop);
         f.lipBot = P(kLipInnerBot);
 
@@ -508,76 +465,6 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
         if (eyeSep < 8.f) continue; // degenerate: nothing to anchor to
         f.right = eyeVec * (1.f / eyeSep);
         f.down = cv::Point2f(-f.right.y, f.right.x);
-
-        // Yaw: turning the head slides the nose toward one cheek, so how the
-        // nose divides the ear-to-ear span is a direct read of the turn.
-        const cv::Point2f nose = P(kNoseTip);
-        const float dL = dot(nose - cheekL, f.right);
-        const float dR = dot(cheekR - nose, f.right);
-        if (dL + dR > 1e-3f)
-            f.yaw = clampf(kYawGain * (dL - dR) / (dL + dR), -0.95f, 0.95f);
-
-        // Pitch: nodding foreshortens the forehead or the jaw, sliding the eye
-        // line along the forehead-to-chin span.
-        const cv::Point2f fore = P(kForehead), chin = P(kChin);
-        const float faceLen = dot(chin - fore, f.down);
-        if (faceLen > 1e-3f) {
-            const float t = dot((f.eyeL + f.eyeR) * 0.5f - fore, f.down) / faceLen;
-            f.pitch = clampf(kPitchGain * (kNeutralEyeT - t), -0.6f, 0.6f);
-        }
-
-        // --- Facial proportions the pig rig is built from --------------
-        // Carry the previous frame's values forward by default: these describe
-        // anatomy, so holding a good measurement beats taking a bad one.
-        const bool hadPrev = (i < prevFaces_.size());
-        if (hadPrev) {
-            const Face& q = prevFaces_[i];
-            f.noseY = q.noseY;
-            f.noseHalfW = q.noseHalfW;
-            f.crownY = q.crownY;
-            f.headHalfW = q.headHalfW;
-        }
-
-        // Only re-measure while the head is close enough to frontal for the
-        // foreshortening correction to hold.
-        if (std::fabs(f.yaw) <= kMeasureMaxYaw &&
-            std::fabs(f.pitch) <= kMeasureMaxPitch) {
-            const float invEye = 1.f / eyeSep;
-            const auto [alarL, alarR] = ordered(P(kAlarR), P(kAlarL));
-            const auto [templeL, templeR] = ordered(P(kTempleR), P(kTempleL));
-            const cv::Point2f eyeMid = (f.eyeL + f.eyeR) * 0.5f;
-
-            // A width measured against eyeSep needs no correction at all: both
-            // foreshorten by cos(yaw), so it cancels. A height does not, and
-            // also has to undo the feature's own depth rotating into view.
-            auto height = [&](cv::Point2f pt, float depthRatio) {
-                const float raw = dot(pt - eyeMid, f.down) * invEye;
-                const float den = std::max(0.4f, std::cos(f.pitch) -
-                                                     std::sin(f.pitch) * depthRatio);
-                return raw * std::cos(f.yaw) / den;
-            };
-
-            const float mNoseHalfW =
-                clampf(0.5f * std::fabs(dot(alarR - alarL, f.right)) * invEye,
-                       kNoseHalfWMin, kNoseHalfWMax);
-            const float mHeadHalfW =
-                clampf(0.5f * std::fabs(dot(templeR - templeL, f.right)) * invEye,
-                       kHeadHalfWMin, kHeadHalfWMax);
-            const float mNoseY =
-                clampf(height(nose, kNoseDepthRatio), kNoseYMin, kNoseYMax);
-            const float mCrownY =
-                clampf(height(fore, kCrownDepthRatio), kCrownYMin, kCrownYMax);
-
-            // Low-pass against the previous frame's same slot; MediaPipe's
-            // VIDEO mode keeps face order stable, so index matching is enough.
-            // A face seen for the first time takes its measurement outright
-            // rather than easing away from the generic defaults.
-            const float a = hadPrev ? kPropBlend : 1.f;
-            f.noseHalfW += (mNoseHalfW - f.noseHalfW) * a;
-            f.headHalfW += (mHeadHalfW - f.headHalfW) * a;
-            f.noseY += (mNoseY - f.noseY) * a;
-            f.crownY += (mCrownY - f.crownY) * a;
-        }
 
         // Expression. The blendshape head reads the mouth straight off the
         // mesh; without it, fall back to the inner-lip gap.
@@ -593,7 +480,6 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
 
         faces_.push_back(std::move(f));
     }
-    prevFaces_ = faces_;
 }
 
 void FaceFilter::apply(cv::Mat& frame, Filter filter, double phase) {
@@ -639,21 +525,12 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
     // cheeks below the eyes. One face -> a tight box; several -> a larger box,
     // still far cheaper than converting the whole frame.
     //
-    // The pig-face ears rise well above the head and the snout/cheeks spread to
-    // the sides, so that filter needs a noticeably larger margin than the warps.
-    // Both animal rigs put geometry well outside the face box -- ears above
-    // the head, a muzzle in front of the nose -- so they need a far larger
-    // margin than the warps. The dog's ears hang lower and its muzzle is
-    // longer, so it gets the most generous bottom margin.
-    const bool animal = (filter == Filter::PigFace || filter == Filter::DogFace);
-    const bool dog = (filter == Filter::DogFace);
     cv::Rect uni;
     for (const Face& face : faces_) {
         const cv::Rect& f = face.box;
-        int mx = animal ? std::max(10, f.width * 9 / 10) : std::max(8, f.width * 2 / 5);
-        int mtop = animal ? std::max(10, f.height) : std::max(6, f.height * 3 / 10);
-        int mbot = animal ? std::max(10, f.height * (dog ? 9 : 4) / 10)
-                          : std::max(8, f.height / 2);
+        int mx = std::max(8, f.width * 2 / 5);
+        int mtop = std::max(6, f.height * 3 / 10);
+        int mbot = std::max(8, f.height / 2);
         cv::Rect r(f.x - mx, f.y - mtop, f.width + 2 * mx, f.height + mtop + mbot);
         uni = (uni.area() == 0) ? r : (uni | r);
     }
@@ -679,10 +556,6 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applySmile(roi, f, off);
         } else if (filter == Filter::Crying) {
             applyCry(roi, f, off, phase);
-        } else if (filter == Filter::PigFace) {
-            applyAnimal(roi, f, off, phase, animal3d::Species::Pig);
-        } else if (filter == Filter::DogFace) {
-            applyAnimal(roi, f, off, phase, animal3d::Species::Dog);
         }
     }
 }
@@ -816,47 +689,11 @@ void FaceFilter::applyCry(cv::Mat& frame, const Face& f, cv::Point2f off,
     drawTears(frame, f, off, phase);
 }
 
-void FaceFilter::applyAnimal(cv::Mat& frame, const Face& f, cv::Point2f off,
-                             double phase, animal3d::Species species) const {
-    // The animal is a set of real 3D meshes (ears + muzzle) rendered through a
-    // perspective camera by animal3d. Keeping the graphics three-dimensional is
-    // what makes them share the face's orientation and perspective -- the snout
-    // protrudes and foreshortens, the ears swing around and occlude behind the
-    // head as it turns -- instead of looking like flat stickers. The face mesh
-    // supplies the pose, so the pig follows a turned or tipped head properly
-    // rather than guessing from a pair of eye boxes inside a detector box.
-    animal3d::Head head;
-    head.hasEyes = true;
-    head.leftEye = f.eyeL - off;
-    head.rightEye = f.eyeR - off;
-    head.hasPose = true;
-    head.yaw = f.yaw;
-    head.pitch = f.pitch;
-    head.prop.noseY = f.noseY;
-    head.prop.noseHalfW = f.noseHalfW;
-    head.prop.crownY = f.crownY;
-    head.prop.headHalfW = f.headHalfW;
-    const cv::Rect box(f.box.x - (int)off.x, f.box.y - (int)off.y, f.box.width,
-                       f.box.height);
-    animal3d::render(frame, box, head, phase, species);
-}
-
-void FaceFilter::drawAnimalPreview(cv::Mat& frame, const cv::Rect& face,
-                                   cv::Point2f leftEye, cv::Point2f rightEye,
-                                   double phase,
-                                   animal3d::Species species) const {
-    if (frame.empty() || frame.type() != CV_8UC3) return;
-    const bool hasEyes = (leftEye.x >= 0.f && rightEye.x >= 0.f);
-    animal3d::render(frame, face, hasEyes, leftEye, rightEye, phase, species);
-}
-
 Filter nextFilter(Filter f) {
     switch (f) {
         case Filter::None:     return Filter::BigSmile;
         case Filter::BigSmile: return Filter::Crying;
-        case Filter::Crying:   return Filter::PigFace;
-        case Filter::PigFace:  return Filter::DogFace;
-        case Filter::DogFace:  return Filter::None;
+        case Filter::Crying:   return Filter::None;
     }
     return Filter::None;
 }
@@ -866,8 +703,6 @@ const char* filterName(Filter f) {
         case Filter::None:     return "Filter Off";
         case Filter::BigSmile: return "Big Smile";
         case Filter::Crying:   return "Crying";
-        case Filter::PigFace:  return "Pig Face";
-        case Filter::DogFace:  return "Dog Face";
     }
     return "";
 }
