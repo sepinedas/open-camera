@@ -264,7 +264,8 @@ build/open-lego-camera [options]
 ### Facial filters
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
-**Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → off. The active
+**Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** → off.
+The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
 
@@ -283,6 +284,10 @@ you then capture.
   the mesh, so they sit on the face and follow every turn, tilt and
   expression; the ears and nose are real shaded geometry, because neither can
   come from a mesh that stops at the face.
+- **Pig Face** is the same construction with a different table: pink skin and
+  a far finer bristle texture, ears that stand up off the crown instead of
+  hanging, and a real snout — a short tube standing off the nose, capped by a
+  disc with two nostrils.
 
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
@@ -334,7 +339,11 @@ facets, worst exactly where a marking has a hard edge, which turned the nose
 into a polygonal star. It is far cheaper than the wireframe — one pass over the
 face's pixels, rather than thousands of short anti-aliased lines.
 
-**The ears and nose are oriented by a basis read off the mesh in 3D.**
+The two animals share one renderer, `face3d`, and differ only by a row in its
+style table; the markings likewise differ only by a colour function. Adding a
+third is a table entry, not another renderer.
+
+**The ears and muzzle are oriented by a basis read off the mesh in 3D.**
 MediaPipe gives every landmark a depth, so the head's axes come straight from
 it: the outer eye corners span its width, forehead-to-chin its height, and
 their cross product the direction it faces. No yaw inferred from how the nose
@@ -343,12 +352,22 @@ attachment and nose position *in that frame* is exact, because nothing in it
 is foreshortened. `dog3d` then renders them with a z-buffer, Gouraud shading
 and 2×2 supersampling, scaled in eye separations so they track distance.
 
-> Two things bite anyone touching this geometry. The scale unit is the
+The dirty region has to allow for all of that. The mesh filters only touch
+the landmarks, so a 3 px margin suffices — but the animals hang geometry well
+outside the face box: an ear reaches ~1.3x the head half-width, and a pig's
+stand a third of a face-height above the crown. They get their own, far more
+generous margin. Too small a margin here does not merely lose the saving, it
+slices the ears off against the edge of the re-encoded region.
+
+> Three things bite anyone touching this geometry. The scale unit is the
 > distance between eye **centres**; using the outer corners instead — an easy
 > substitution — silently enlarges the entire rig by about 1.45×. And the nose
 > dome must be wound so its outward face is the front face: copying the
 > winding of a forward-sweeping tube leaves it wholly back-facing, and culling
-> eats all but a sliver of rim.
+> eats all but a sliver of rim. The same trap catches the pig's snout disc,
+> which is a *fan* and therefore winds the opposite way round from the tube it
+> caps -- get it wrong and the snout renders as a hollow ring with the tube's
+> inner wall showing through.
 
 ### Rotating the display
 

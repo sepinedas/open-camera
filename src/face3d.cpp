@@ -1,4 +1,4 @@
-#include "dog3d.hpp"
+#include "face3d.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 
 #include <opencv2/imgproc.hpp>
 
-namespace olc::dog3d {
+namespace olc::face3d {
 
 namespace {
 
@@ -19,20 +19,67 @@ constexpr float kPi = 3.14159265358979f;
 // frame than a whole face, so 2x2 is affordable and the edges need it.
 constexpr int kSS = 2;
 
-// --- Dog geometry, in eye-separation units in the head frame ---------------
+// --- Per-species geometry, in eye-separation units in the head frame -------
 // +x toward the image-right eye, +y toward the chin, +z away from the camera,
 // origin at the eye midpoint. Ear anchors are relative to the *measured* crown
 // and head width, so they land on the real silhouette rather than an assumed
-// one.
-constexpr float kEarAttachX = 0.88f, kEarAttachY = 0.10f;
-constexpr float kEarTipX = 0.99f, kEarTipY = 1.32f;
-constexpr float kEarHalfW = 0.30f, kEarRound = 3.2f;
-constexpr float kEarBulge = 0.15f, kEarCurl = 0.12f;
-const Vec3f kEarCol(62, 96, 138);      // BGR: brown, matching the painted coat
-const Vec3f kEarInnerCol(78, 92, 126); // darker inner hollow
-const Vec3f kNoseCol(30, 28, 28);      // near-black leather
-constexpr float kNoseR = 0.24f;        // radius of the nose dome
-constexpr float kEarMottle = 0.07f;    // per-vertex coat variation on the ears
+// one, and the muzzle sits on the measured nose.
+struct Style {
+    // Ear: a lobe swept from an attachment on the head out to a tip.
+    float earAttachX, earAttachY;
+    float earTipX, earTipY;
+    float earHalfW;  // widest half-width, as a multiple of headHalfW
+    float earRound;  // tip shape: small rounds it off, large draws it to a point
+    float earBulge, earCurl;
+    float earMottle; // per-vertex coat variation, so it is not moulded plastic
+    Vec3f earCol, earInnerCol;
+
+    // Muzzle. A dog gets a bare domed nose sitting on the painted muzzle; a
+    // pig gets a snout -- a short tube standing off the face, capped by a disc
+    // with two nostrils -- which is the whole point of the animal.
+    bool snout;
+    float noseR;     // dog: radius of the nose dome
+    float snoutLen;  // pig: how far the snout stands off the face
+    float snoutR;    // pig: radius of the tube at the face
+    float snoutFlat; // pig: disc height / width
+    float snoutDrop; // pig: how far the axis tilts down as it comes forward
+    Vec3f noseCol, snoutCol, nostrilCol;
+};
+
+Style styleFor(Species sp) {
+    Style s{};
+    if (sp == Species::Dog) {
+        s.earAttachX = 0.88f; s.earAttachY = 0.10f;
+        s.earTipX = 0.99f;    s.earTipY = 1.32f;
+        s.earHalfW = 0.30f;   s.earRound = 3.2f;
+        s.earBulge = 0.15f;   s.earCurl = 0.12f;
+        s.earMottle = 0.07f;
+        s.earCol = Vec3f(62, 96, 138);
+        s.earInnerCol = Vec3f(78, 92, 126);
+        s.snout = false;
+        s.noseR = 0.24f;
+        s.noseCol = Vec3f(30, 28, 28);
+    } else { // Pig
+        // Ears stand up off the crown and lean outward: the tip's y is
+        // negative, i.e. *above* the crown, which is what keeps them clear of
+        // the face entirely.
+        s.earAttachX = 0.56f; s.earAttachY = 0.12f;
+        s.earTipX = 0.90f;    s.earTipY = -0.86f;
+        s.earHalfW = 0.39f;   s.earRound = 2.4f;
+        s.earBulge = 0.16f;   s.earCurl = 0.10f;
+        s.earMottle = 0.05f;
+        s.earCol = Vec3f(172, 152, 239);
+        s.earInnerCol = Vec3f(122, 98, 202);
+        s.snout = true;
+        s.snoutLen = 0.34f;
+        s.snoutR = 0.46f;
+        s.snoutFlat = 0.80f;
+        s.snoutDrop = 0.16f;
+        s.snoutCol = Vec3f(178, 160, 242);
+        s.nostrilCol = Vec3f(96, 74, 150);
+    }
+    return s;
+}
 
 float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -103,14 +150,14 @@ Matx33f rotZ(float a) {
 
 // --- Mesh builders ---------------------------------------------------------
 
-Mesh buildEar(float side, float wiggle, const Head& h) {
+Mesh buildEar(float side, float wiggle, const Head& h, const Style& st) {
     Mesh m;
     m.doubleSided = true;
     m.ambient = 0.38f;
     m.spec = 0.12f;
     m.shin = 12.f;
-    const Vec3f pink = kEarCol;
-    const Vec3f inner = kEarInnerCol;
+    const Vec3f pink = st.earCol;
+    const Vec3f inner = st.earInnerCol;
 
     // An ear is a lobe swept along an axis from where it joins the head to its
     // tip, widening out of the attachment and closing again at the far end.
@@ -121,8 +168,8 @@ Mesh buildEar(float side, float wiggle, const Head& h) {
     // Model eyes are at (+-0.5, -0.35); +y is down, -z is toward the camera.
     const float hw = h.headHalfW;
     const float cy = h.crownY;
-    const Vec3f attach(side * kEarAttachX * hw, cy + kEarAttachY, -0.05f);
-    const Vec3f tip(side * kEarTipX * hw, cy + kEarTipY, -0.20f);
+    const Vec3f attach(side * st.earAttachX * hw, cy + st.earAttachY, -0.05f);
+    const Vec3f tip(side * st.earTipX * hw, cy + st.earTipY, -0.20f);
     const Vec3f axis = tip - attach;
     // Across the lobe, perpendicular to its axis and to the view direction, so
     // the width is always spread across the screen rather than into it.
@@ -130,15 +177,15 @@ Mesh buildEar(float side, float wiggle, const Head& h) {
     if (across[0] * side < 0.f) across = -across; // keep +across pointing outward
     Vec3f Nrm = norm(across.cross(norm(axis)));
     if (Nrm[2] > 0.f) Nrm = -Nrm; // face the camera
-    const float maxHalfW = kEarHalfW * hw;
-    const float bulge = kEarBulge, tipCurl = kEarCurl;
+    const float maxHalfW = st.earHalfW * hw;
+    const float bulge = st.earBulge, tipCurl = st.earCurl;
 
     // Half-width along the lobe: broad where it meets the head, widest a third
     // of the way along, then closing. `earRound` sets how abruptly it closes --
     // a small value rounds the tip off, a large one draws it to a point.
     auto halfWidth = [&](float t) {
         const float body = 0.70f + 0.30f * std::sin(kPi * clampf(t * 0.85f + 0.08f, 0.f, 1.f));
-        const float close = std::pow(std::max(0.f, 1.f - std::pow(t, kEarRound)), 0.45f);
+        const float close = std::pow(std::max(0.f, 1.f - std::pow(t, st.earRound)), 0.45f);
         return maxHalfW * body * close;
     };
 
@@ -162,7 +209,7 @@ Mesh buildEar(float side, float wiggle, const Head& h) {
             const float inF = clampf((t - 0.18f) * 1.5f, 0.f, 1.f) *
                               clampf(1.f - std::fabs(a) * 1.5f, 0.f, 1.f);
             const Vec3f col = (pink * (1.f - inF) + inner * inF) *
-                              (1.f + kEarMottle * mottle(ti, ai * 7 + (int)side));
+                              (1.f + st.earMottle * mottle(ti, ai * 7 + (int)side));
             g[ti][ai] = m.add(p, col);
         }
     }
@@ -186,7 +233,7 @@ Mesh buildEar(float side, float wiggle, const Head& h) {
 // Wound so its outward face is the front face -- copying the winding of a
 // forward-sweeping tube instead leaves it entirely back-facing, and culling
 // swallows all but a sliver of rim.
-Mesh buildNose(const Head& h) {
+Mesh buildNose(const Head& h, const Style& st) {
     Mesh m;
     m.doubleSided = false; // closed and convex: back faces can be culled
     m.ambient = 0.30f;
@@ -199,14 +246,14 @@ Mesh buildNose(const Head& h) {
     for (int r = 0; r < nRing; ++r) {
         // 0 at the equator, against the face; 1 at the pole, toward the camera.
         const float lat = 0.5f * kPi * (float)r / (nRing - 1);
-        const float cr = std::cos(lat) * kNoseR, cz = std::sin(lat) * kNoseR;
+        const float cr = std::cos(lat) * st.noseR, cz = std::sin(lat) * st.noseR;
         for (int i = 0; i < nSeg; ++i) {
             const float a = 2.f * kPi * i / nSeg;
             // A little wider than tall, like real nose leather.
             ring[r].push_back(m.add(centre + Vec3f(1.20f * cr * std::cos(a),
                                                    0.88f * cr * std::sin(a),
                                                    -cz),
-                                    kNoseCol));
+                                    st.noseCol));
         }
     }
     for (int r = 0; r + 1 < nRing; ++r)
@@ -215,6 +262,110 @@ Mesh buildNose(const Head& h) {
             m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
             m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
         }
+    m.computeNormals();
+    return m;
+}
+
+
+// --- Pig snout -------------------------------------------------------------
+// A short elliptical tube standing off the nose, capped by a slightly domed
+// disc with two nostrils in it. Both parts share one frame so the nostrils
+// cannot drift off the end when the snout moves or resizes.
+struct SnoutFrame {
+    Vec3f base, axis, u, v, pad;
+    float len, rx, ry;
+};
+
+SnoutFrame snoutFrame(const Head& h, const Style& st) {
+    SnoutFrame s;
+    s.axis = norm(Vec3f(0.f, st.snoutDrop, -1.f)); // forward, a touch down
+    s.len = st.snoutLen;
+    s.rx = st.snoutR;
+    s.ry = st.snoutFlat * s.rx;
+    // Sits on the measured nose and protrudes forward from there.
+    s.base = Vec3f(0.f, h.noseY, h.noseZ);
+    s.pad = s.base + s.axis * s.len;
+    // An orthonormal pair spanning the disc: +u roughly head-right.
+    Vec3f up(0.f, 1.f, 0.f);
+    if (std::fabs(s.axis.dot(up)) > 0.9f) up = Vec3f(1.f, 0.f, 0.f);
+    s.u = norm(up.cross(s.axis));
+    s.v = norm(s.axis.cross(s.u));
+    return s;
+}
+
+Mesh buildSnout(const Head& h, const Style& st) {
+    Mesh m;
+    m.ambient = 0.42f;
+    m.spec = 0.26f;
+    m.shin = 18.f;
+    const SnoutFrame sf = snoutFrame(h, st);
+    const int nSeg = 26, nRing = 4;
+
+    std::vector<std::vector<int>> ring(nRing);
+    for (int r = 0; r < nRing; ++r) {
+        const float t = (float)r / (nRing - 1);
+        const Vec3f c = sf.base + sf.axis * (t * sf.len);
+        const float rx = sf.rx * (1.f + 0.14f * t); // flares toward the disc
+        const float ry = sf.ry * (1.f + 0.12f * t);
+        for (int i = 0; i < nSeg; ++i) {
+            const float a = 2.f * kPi * i / nSeg;
+            ring[r].push_back(m.add(c + sf.u * (rx * std::cos(a)) +
+                                        sf.v * (ry * std::sin(a)),
+                                    st.snoutCol));
+        }
+    }
+    for (int r = 0; r + 1 < nRing; ++r)
+        for (int i = 0; i < nSeg; ++i) {
+            const int j = (i + 1) % nSeg;
+            m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
+            m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
+        }
+
+    // The disc closing the tube, domed very slightly toward the camera.
+    const Vec3f padCol = st.snoutCol * 1.08f;
+    const float frx = sf.rx * 1.16f, fry = sf.ry * 1.14f;
+    const int centre = m.add(sf.pad + sf.axis * 0.05f, padCol);
+    std::vector<int> rim;
+    for (int i = 0; i < nSeg; ++i) {
+        const float a = 2.f * kPi * i / nSeg;
+        rim.push_back(m.add(sf.pad + sf.u * (frx * std::cos(a)) +
+                                sf.v * (fry * std::sin(a)),
+                            padCol));
+    }
+    // Reversed relative to the tube's winding: a fan facing the camera turns
+    // the opposite way round from a ring sweeping away from it. Wound the
+    // other way the disc is entirely back-facing, culling removes it, and the
+    // snout renders as a hollow ring with the tube's inner wall showing.
+    for (int i = 0; i < nSeg; ++i)
+        m.face(centre, rim[(i + 1) % nSeg], rim[i]);
+    m.computeNormals();
+    return m;
+}
+
+Mesh buildNostrils(const Head& h, const Style& st) {
+    Mesh m;
+    m.doubleSided = true; // tiny discs; winding must never hide them
+    m.ambient = 0.30f;
+    m.spec = 0.05f;
+    m.shin = 20.f;
+    const SnoutFrame sf = snoutFrame(h, st);
+    const int nSeg = 16;
+    for (float side : {-1.f, 1.f}) {
+        // Just in front of the disc so they win the depth test against it.
+        const Vec3f c = sf.pad + sf.u * (0.40f * sf.rx * side) +
+                        sf.axis * 0.07f;
+        const float rx = 0.22f * sf.rx, ry = 0.34f * sf.ry;
+        const int centre = m.add(c + sf.axis * 0.02f, st.nostrilCol);
+        std::vector<int> rim;
+        for (int i = 0; i < nSeg; ++i) {
+            const float a = 2.f * kPi * i / nSeg;
+            rim.push_back(m.add(c + sf.u * (rx * std::cos(a)) +
+                                    sf.v * (ry * std::sin(a)),
+                                st.nostrilCol));
+        }
+        for (int i = 0; i < nSeg; ++i)
+            m.face(centre, rim[i], rim[(i + 1) % nSeg]);
+    }
     m.computeNormals();
     return m;
 }
@@ -302,15 +453,21 @@ void raster(const Mesh& m, const Head& h, float ssScale, cv::Point2f ssOrg,
 
 } // namespace
 
-void render(cv::Mat& frame, const Head& head) {
+void render(cv::Mat& frame, const Head& head, Species species) {
     if (frame.empty() || frame.type() != CV_8UC3) return;
     if (head.unit < 12.f) return; // too small to render cleanly
 
+    const Style st = styleFor(species);
     const float wig = 0.05f * std::sin((float)head.phase * 0.11f);
     std::vector<Mesh> meshes;
-    meshes.push_back(buildEar(-1.f, wig, head));
-    meshes.push_back(buildEar(+1.f, wig, head));
-    meshes.push_back(buildNose(head));
+    meshes.push_back(buildEar(-1.f, wig, head, st));
+    meshes.push_back(buildEar(+1.f, wig, head, st));
+    if (st.snout) {
+        meshes.push_back(buildSnout(head, st));
+        meshes.push_back(buildNostrils(head, st));
+    } else {
+        meshes.push_back(buildNose(head, st));
+    }
 
     // Image-space bounding box of every projected vertex -> the region touched.
     float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
@@ -356,4 +513,4 @@ void render(cv::Mat& frame, const Head& head) {
     }
 }
 
-} // namespace olc::dog3d
+} // namespace olc::face3d

@@ -6,7 +6,7 @@
 
 #include <opencv2/core.hpp>
 
-#include "dog3d.hpp"
+#include "face3d.hpp"
 #include "types.hpp"
 
 namespace olc {
@@ -142,12 +142,15 @@ private:
     // Paint a dog onto the face by filling the mesh triangles. Because the
     // colour of each triangle is decided in the head's own frame, the markings
     // follow the face through expression and pose instead of floating over it.
-    void applyDogFace(cv::Mat& frame, const Face& f, cv::Point2f off,
-                      double phase) const;
-    // Draw the dog's 3D ears and nose, oriented by a basis measured from the
-    // face mesh in three dimensions.
-    void drawDogParts(cv::Mat& frame, const Face& f, cv::Point2f off,
-                      double phase) const;
+    // Paint an animal onto the face by filling the mesh triangles. Because
+    // each triangle's colour is decided in the head's own frame, the markings
+    // follow the face through expression and pose instead of floating over it.
+    void applyAnimalFace(cv::Mat& frame, const Face& f, cv::Point2f off,
+                         double phase, face3d::Species species) const;
+    // Draw the animal's 3D ears and muzzle, oriented by a basis measured
+    // from the face mesh in three dimensions.
+    void drawAnimalParts(cv::Mat& frame, const Face& f, cv::Point2f off,
+                         double phase, face3d::Species species) const;
 
     std::unique_ptr<Landmarker> lm_;
     bool warned_ = false;     // "no model" logged only once

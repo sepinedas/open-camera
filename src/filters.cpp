@@ -1,6 +1,6 @@
 #include "filters.hpp"
 
-#include "dog3d.hpp"
+#include "face3d.hpp"
 
 #include <glob.h>
 
@@ -77,7 +77,7 @@ constexpr bool tesselationIsTriples() {
 }
 static_assert(tesselationIsTriples(),
               "MediaPipe's tessellation is no longer consecutive edge triples; "
-              "the dog filter's triangle list must be rebuilt");
+              "the animal filters' triangle list must be rebuilt");
 
 float clamp01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 
@@ -96,7 +96,6 @@ const cv::Vec3f kDogBase(74, 132, 190);    // BGR: tan coat
 const cv::Vec3f kDogMask(38, 64, 104);     // darker patches around the eyes
 const cv::Vec3f kDogMuzzle(226, 238, 248); // pale muzzle and brow blaze
 const cv::Vec3f kDogNose(26, 24, 24);      // near-black nose leather
-constexpr float kFurDepth = 0.085f;        // fur contrast; subtle on purpose
 // How far the subject's own shading may push the paint. Wide enough to keep
 // real modelling, tight enough that a blown highlight or deep shadow does not
 // turn the coat white or black.
@@ -144,6 +143,15 @@ float furAt(float u, float v) {
     return (n / 1.45f) * 2.f - 1.f;
 }
 
+// A pig is pink skin rather than fur, so its markings are gentler: a deeper
+// pink in the eye sockets and along the jaw, a paler patch where the snout
+// sits. The bristle texture is much finer than a dog's coat too.
+const cv::Vec3f kPigBase(168, 158, 236);  // BGR: pig pink
+const cv::Vec3f kPigShade(140, 126, 208); // deeper pink, eye sockets and jaw
+const cv::Vec3f kPigSnout(198, 184, 247); // paler patch under the 3D snout
+constexpr float kDogFur = 0.085f;
+constexpr float kPigFur = 0.035f;
+
 // The coat colour at one point on the face, blended front to back.
 cv::Vec3f dogColourAt(float u, float v) {
     cv::Vec3f c = kDogBase;
@@ -159,6 +167,20 @@ cv::Vec3f dogColourAt(float u, float v) {
     over(kDogMuzzle, ellipseMask(u, v, 0.f, 0.98f, 0.70f, 0.74f, 0.26f));
     // Nose leather.
     over(kDogNose, ellipseMask(u, v, 0.f, 0.62f, 0.32f, 0.25f, 0.16f));
+    return c;
+}
+
+cv::Vec3f pigColourAt(float u, float v) {
+    cv::Vec3f c = kPigBase;
+    auto over = [&](const cv::Vec3f& col, float a) {
+        c = c * (1.f - a) + col * a;
+    };
+    // Soft shading in the eye sockets, as on a real snouted head.
+    over(kPigShade, ellipseMask(u, v, -0.52f, 0.02f, 0.54f, 0.42f, 0.70f));
+    over(kPigShade, ellipseMask(u, v, 0.52f, 0.02f, 0.54f, 0.42f, 0.70f));
+    // Pale patch the 3D snout stands on, so its base does not sit on a hard
+    // colour edge when the head turns and the snout swings across it.
+    over(kPigSnout, ellipseMask(u, v, 0.f, 0.80f, 0.70f, 0.66f, 0.45f));
     return c;
 }
 
@@ -214,7 +236,7 @@ const char* kModelGlobs[] = {
 // as well as a bright one.
 void fillTriangleSmooth(cv::Mat& img, const cv::Point2f p[3],
                         const cv::Vec3f c[3], const cv::Point2f uv[3],
-                        float invMeanLuma) {
+                        float invMeanLuma, float furDepth) {
     const float area = (p[1].x - p[0].x) * (p[2].y - p[0].y) -
                        (p[2].x - p[0].x) * (p[1].y - p[0].y);
     if (std::fabs(area) < 1e-6f) return;
@@ -244,7 +266,7 @@ void fillTriangleSmooth(cv::Mat& img, const cv::Point2f p[3],
             // Fur, in head-frame coordinates so it tracks the face.
             const float fu = uv[0].x * w0 + uv[1].x * w1 + uv[2].x * w2;
             const float fv = uv[0].y * w0 + uv[1].y * w1 + uv[2].y * w2;
-            const float fur = 1.f + kFurDepth * furAt(fu, fv);
+            const float fur = 1.f + furDepth * furAt(fu, fv);
 
             // The skin underneath, as a shading term. Rec.601 luma of what is
             // already in the buffer -- free, because the paint is opaque and
@@ -716,14 +738,31 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
     cv::Rect uni;
     for (const Face& face : faces_) {
         const cv::Rect& f = face.box;
-        // The mesh is drawn on the landmarks themselves, so it needs only a
-        // couple of pixels for the dot radius and line width -- nothing like
-        // the margin the warps need for their Gaussian falloff and tears.
-        const bool meshOnly = (filter == Filter::FaceMesh ||
-                               filter == Filter::DogFace);
-        int mx = meshOnly ? 3 : std::max(8, f.width * 2 / 5);
-        int mtop = meshOnly ? 3 : std::max(6, f.height * 3 / 10);
-        int mbot = meshOnly ? 3 : std::max(8, f.height / 2);
+        // Three margins, because the filters reach different distances.
+        //
+        //  * the wireframe sits on the landmarks themselves: a couple of
+        //    pixels for the dot radius and line width is enough;
+        //  * the animal filters paint the mesh but *also* hang 3D ears and a
+        //    muzzle well outside the face box -- an ear reaches ~1.3x the head
+        //    half-width, and a pig's stand above the crown. Too small a margin
+        //    here does not merely waste the saving, it slices the ears off
+        //    against the edge of the re-encoded region;
+        //  * the warps need room for their Gaussian falloff and the tears.
+        const bool wireOnly = (filter == Filter::FaceMesh);
+        const bool animal = (filter == Filter::DogFace ||
+                             filter == Filter::PigFace);
+        int mx, mtop, mbot;
+        if (wireOnly) {
+            mx = mtop = mbot = 3;
+        } else if (animal) {
+            mx = std::max(10, f.width * 3 / 10);
+            mtop = std::max(10, f.height * 2 / 5);
+            mbot = std::max(8, f.height / 6);
+        } else {
+            mx = std::max(8, f.width * 2 / 5);
+            mtop = std::max(6, f.height * 3 / 10);
+            mbot = std::max(8, f.height / 2);
+        }
         cv::Rect r(f.x - mx, f.y - mtop, f.width + 2 * mx, f.height + mtop + mbot);
         uni = (uni.area() == 0) ? r : (uni | r);
     }
@@ -752,7 +791,9 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
         } else if (filter == Filter::FaceMesh) {
             applyFaceMesh(roi, f, off);
         } else if (filter == Filter::DogFace) {
-            applyDogFace(roi, f, off, phase);
+            applyAnimalFace(roi, f, off, phase, face3d::Species::Dog);
+        } else if (filter == Filter::PigFace) {
+            applyAnimalFace(roi, f, off, phase, face3d::Species::Pig);
         }
     }
 }
@@ -945,8 +986,9 @@ void FaceFilter::applyFaceMesh(cv::Mat& frame, const Face& f,
 // MediaPipe supplies a depth per landmark, this is a genuine 3D frame -- no
 // guessing yaw from how the nose divides the face, and no foreshortening
 // correction, which is what the old rig needed and never got quite right.
-void FaceFilter::drawDogParts(cv::Mat& frame, const Face& f,
-                              cv::Point2f off, double phase) const {
+void FaceFilter::drawAnimalParts(cv::Mat& frame, const Face& f,
+                                 cv::Point2f off, double phase,
+                                 face3d::Species species) const {
     if ((int)f.mesh3.size() < 468) return;
     auto V = [&](int i) {
         return cv::Vec3f(f.mesh3[i].x, f.mesh3[i].y, f.mesh3[i].z);
@@ -957,7 +999,7 @@ void FaceFilter::drawDogParts(cv::Mat& frame, const Face& f,
     };
 
     // The unit is the distance between the eye *centres*, not the outer
-    // corners: every proportion below and every constant in dog3d is expressed
+    // corners: every proportion below and every constant in face3d is expressed
     // in eye separations, and the outer corners are about 1.45x that, which
     // would scale the whole rig up by the same factor.
     auto eyeCentre = [&](int a, int b, int c, int d) {
@@ -979,7 +1021,7 @@ void FaceFilter::drawDogParts(cv::Mat& frame, const Face& f,
     // "left" outer eye corner is on the image right; flip so +x is image-right.
     if (ex[0] < 0.f) { ex = -ex; ez = -ez; }
 
-    dog3d::Head h;
+    face3d::Head h;
     h.R = cv::Matx33f(ex[0], ey[0], ez[0],
                       ex[1], ey[1], ez[1],
                       ex[2], ey[2], ez[2]); // columns: right, down, back
@@ -1003,11 +1045,12 @@ void FaceFilter::drawDogParts(cv::Mat& frame, const Face& f,
     h.noseY = clampf(nose[1], 0.35f, 1.10f);
     h.noseZ = clampf(nose[2], -0.90f, -0.05f);
 
-    dog3d::render(frame, h);
+    face3d::render(frame, h, species);
 }
 
-void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
-                              cv::Point2f off, double phase) const {
+void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
+                                 cv::Point2f off, double phase,
+                                 face3d::Species species) const {
     if ((int)f.mesh.size() < 468) return;
     const float eyeSep = len(f.eyeR - f.eyeL);
     if (eyeSep < 8.f) return;
@@ -1029,6 +1072,9 @@ void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
     // Colour every vertex once, from where it sits in the head's frame, then
     // let the triangles interpolate between them. Evaluating per vertex rather
     // than per triangle is what makes the markings smooth across the mesh.
+    const bool isPig = (species == face3d::Species::Pig);
+    const float furDepth = isPig ? kPigFur : kDogFur;
+
     std::vector<cv::Vec3f> vcol(f.mesh.size());
     std::vector<cv::Point2f> vpos(f.mesh.size());
     std::vector<cv::Point2f> vuv(f.mesh.size());
@@ -1037,7 +1083,8 @@ void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
         vpos[i] = cv::Point2f(q.x - org.x, q.y - org.y);
         const cv::Point2f d = q - eyeMid;
         vuv[i] = cv::Point2f(dot(d, f.right) * invEye, dot(d, f.down) * invEye);
-        vcol[i] = dogColourAt(vuv[i].x, vuv[i].y);
+        vcol[i] = isPig ? pigColourAt(vuv[i].x, vuv[i].y)
+                        : dogColourAt(vuv[i].x, vuv[i].y);
     }
 
     // Mean brightness of the face, so the shading term below is relative to
@@ -1062,12 +1109,12 @@ void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
         const cv::Point2f tri[3] = {vpos[ia], vpos[ib], vpos[ic]};
         const cv::Vec3f col[3] = {vcol[ia], vcol[ib], vcol[ic]};
         const cv::Point2f uv[3] = {vuv[ia], vuv[ib], vuv[ic]};
-        fillTriangleSmooth(ov, tri, col, uv, invMeanLuma);
+        fillTriangleSmooth(ov, tri, col, uv, invMeanLuma, furDepth);
     }
     // Ears and nose on top, as real geometry. They cannot come from the face
     // mesh -- it stops at the face -- so they are oriented by a basis measured
     // from it in 3D instead.
-    drawDogParts(frame, f, off, phase);
+    drawAnimalParts(frame, f, off, phase, species);
 }
 
 Filter nextFilter(Filter f) {
@@ -1076,7 +1123,8 @@ Filter nextFilter(Filter f) {
         case Filter::BigSmile: return Filter::Crying;
         case Filter::Crying:   return Filter::FaceMesh;
         case Filter::FaceMesh: return Filter::DogFace;
-        case Filter::DogFace:  return Filter::None;
+        case Filter::DogFace:  return Filter::PigFace;
+        case Filter::PigFace:  return Filter::None;
     }
     return Filter::None;
 }
@@ -1088,6 +1136,7 @@ const char* filterName(Filter f) {
         case Filter::Crying:   return "Crying";
         case Filter::FaceMesh: return "Face Mesh";
         case Filter::DogFace:  return "Dog Face";
+        case Filter::PigFace:  return "Pig Face";
     }
     return "";
 }

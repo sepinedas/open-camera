@@ -15,7 +15,13 @@
 // axes can be read straight off it rather than inferred from how features sit
 // inside a detection box. Everything below is expressed in that frame, in
 // units of one eye separation.
-namespace olc::dog3d {
+namespace olc::face3d {
+
+// Which animal's ears and muzzle to build. The rig around them -- the basis
+// measured off the face mesh, the perspective-free projection, the z-buffer,
+// the shading -- is identical, so the two differ only by a table of geometry
+// and colours (see Style in the .cpp).
+enum class Species { Dog, Pig };
 
 // The head's frame, measured from the face mesh, in image space.
 struct Head {
@@ -40,6 +46,6 @@ struct Head {
 
 // Draw the ears and nose over `frame` (BGR, 8-bit). A no-op when the head is
 // too small to render cleanly.
-void render(cv::Mat& frame, const Head& head);
+void render(cv::Mat& frame, const Head& head, Species species);
 
-} // namespace olc::dog3d
+} // namespace olc::face3d
