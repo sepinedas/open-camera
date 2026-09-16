@@ -45,6 +45,7 @@ enum class Filter {
     FaceMesh, // the tracked landmarks drawn over the face as dots and edges
     DogFace,  // a dog painted onto the face mesh, so it moves with the face
     PigFace,  // the same, built as a pig: snout and upright ears
+    Grinch,   // green, shaggy, pointed ears and a heavy scowl
 };
 
 } // namespace olc

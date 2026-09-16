@@ -139,9 +139,6 @@ private:
     // Draw the tracked landmarks as dots joined by MediaPipe's own
     // tessellation: the wireframe-over-the-face look.
     void applyFaceMesh(cv::Mat& frame, const Face& f, cv::Point2f off) const;
-    // Paint a dog onto the face by filling the mesh triangles. Because the
-    // colour of each triangle is decided in the head's own frame, the markings
-    // follow the face through expression and pose instead of floating over it.
     // Paint an animal onto the face by filling the mesh triangles. Because
     // each triangle's colour is decided in the head's own frame, the markings
     // follow the face through expression and pose instead of floating over it.

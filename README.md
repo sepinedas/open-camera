@@ -264,7 +264,8 @@ build/open-lego-camera [options]
 ### Facial filters
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
-**Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** → off.
+**Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** →
+**Grinch** → off.
 The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
@@ -285,9 +286,27 @@ you then capture.
   expression; the ears and nose are real shaded geometry, because neither can
   come from a mesh that stops at the face.
 - **Pig Face** is the same construction with a different table: pink skin and
-  a far finer bristle texture, ears that stand up off the crown instead of
-  hanging, and a real snout — a short tube standing off the nose, capped by a
-  disc with two nostrils.
+  a far finer bristle texture, broad blunt ears that stand up off the crown
+  instead of hanging, and a real snout — a short tube standing off the nose,
+  capped by a domed disc with two nostrils **cut into** it.
+- **Grinch** is the third of that family: vivid green skin that grows shaggier
+  toward the crown, yellow-green eye pads, and a pair of heavy brows angled
+  down toward the nose — the scowl is drawn with *rotated* ellipses, since an
+  axis-aligned one cannot slope. Over it sit 3D pointed elf ears, anchored at
+  temple height where the head is genuinely widest, and a small upturned snub
+  nose lit as skin rather than as a dog's wet leather.
+
+  **Ears are shells, not sheets.** All three species' ears are built as a
+  closed shell: a concha hollowed into the front, a rim standing proud of it,
+  a back, and a real front-to-back thickness you can see at the silhouette,
+  the whole lobe rolled about its own axis so it faces outward. A single
+  convex sheet — which is what these were — reads as a horn however it is
+  shaded or shaped. The bowl depth is signed, so the one builder covers both
+  an ear turned toward you (pig, grinch) and the *back* of one that hangs
+  (dog). Nostrils are likewise carved into the muzzle along its own surface
+  normal rather than pasted in front of it.
+
+  (The character is Dr. Seuss's; the geometry and palette here are ours.)
 
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.

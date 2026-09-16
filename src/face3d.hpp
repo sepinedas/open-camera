@@ -2,13 +2,13 @@
 
 #include <opencv2/core.hpp>
 
-// Three-dimensional ears and nose for the dog filter.
+// Three-dimensional ears and muzzles for the face-paint filters.
 //
-// The dog's *markings* are painted onto the MediaPipe face mesh (see
-// FaceFilter::applyDogFace), which is what makes them sit on the skin and
-// deform with it. Ears and a nose cannot come from that mesh -- it ends at the
-// face, and a nose has to stand off it -- so they are real triangle meshes,
-// shaded and z-buffered, drawn over the painted face.
+// Their *markings* are painted onto the MediaPipe face mesh (see
+// FaceFilter::applyAnimalFace), which is what makes them sit on the skin and
+// deform with it. Ears and a muzzle cannot come from that mesh -- it ends at
+// the face, and a nose has to stand off it -- so they are real triangle
+// meshes, shaded and z-buffered, drawn over the painted face.
 //
 // Unlike a sticker, they are oriented by a basis measured from the face mesh
 // *in three dimensions*: MediaPipe gives every landmark a depth, so the head's
@@ -17,11 +17,11 @@
 // units of one eye separation.
 namespace olc::face3d {
 
-// Which animal's ears and muzzle to build. The rig around them -- the basis
-// measured off the face mesh, the perspective-free projection, the z-buffer,
-// the shading -- is identical, so the two differ only by a table of geometry
-// and colours (see Style in the .cpp).
-enum class Species { Dog, Pig };
+// Whose ears and muzzle to build. The rig around them -- the basis measured
+// off the face mesh, the perspective-free projection, the z-buffer, the
+// shading -- is identical, so they differ only by a table of geometry and
+// colours (see Style in the .cpp).
+enum class Species { Dog, Pig, Grinch };
 
 // The head's frame, measured from the face mesh, in image space.
 struct Head {

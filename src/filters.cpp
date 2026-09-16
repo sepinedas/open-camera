@@ -109,6 +109,19 @@ float ellipseMask(float u, float v, float cu, float cv_, float ru, float rv,
     return clamp01((1.f - d) / std::max(0.05f, soft));
 }
 
+// As above, but with the ellipse rotated by `ang` (radians, +u toward +v).
+// The scowl needs it: a brow that slopes down toward the nose cannot be drawn
+// with an axis-aligned ellipse.
+float ellipseMaskRot(float u, float v, float cu, float cv_, float ru, float rv,
+                     float soft, float ang) {
+    const float ca = std::cos(ang), sa = std::sin(ang);
+    const float u0 = u - cu, v0 = v - cv_;
+    const float du = (u0 * ca + v0 * sa) / ru;
+    const float dv = (-u0 * sa + v0 * ca) / rv;
+    const float d = std::sqrt(du * du + dv * dv);
+    return clamp01((1.f - d) / std::max(0.05f, soft));
+}
+
 // Integer hash -> 0..1. No transcendentals: this runs per pixel, and a
 // sin-based hash would cost more than the rest of the shading put together.
 float hash21(int x, int y) {
@@ -149,8 +162,16 @@ float furAt(float u, float v) {
 const cv::Vec3f kPigBase(168, 158, 236);  // BGR: pig pink
 const cv::Vec3f kPigShade(140, 126, 208); // deeper pink, eye sockets and jaw
 const cv::Vec3f kPigSnout(198, 184, 247); // paler patch under the 3D snout
+// Green, and shaggier than either animal: the fur term is turned well up.
+const cv::Vec3f kGrBase(72, 196, 96);    // BGR: vivid green coat
+const cv::Vec3f kGrLight(120, 226, 150); // paler muzzle, cheeks and chin
+const cv::Vec3f kGrBrow(30, 84, 42);     // the heavy scowling brow itself
+const cv::Vec3f kGrDark(50, 122, 66);    // softer shading: sockets, hollows
+const cv::Vec3f kGrEye(105, 228, 218);   // yellow-green around the eyes
+
 constexpr float kDogFur = 0.085f;
 constexpr float kPigFur = 0.035f;
+constexpr float kGrinchFur = 0.115f;
 
 // The coat colour at one point on the face, blended front to back.
 cv::Vec3f dogColourAt(float u, float v) {
@@ -167,6 +188,32 @@ cv::Vec3f dogColourAt(float u, float v) {
     over(kDogMuzzle, ellipseMask(u, v, 0.f, 0.98f, 0.70f, 0.74f, 0.26f));
     // Nose leather.
     over(kDogNose, ellipseMask(u, v, 0.f, 0.62f, 0.32f, 0.25f, 0.16f));
+    return c;
+}
+
+cv::Vec3f grinchColourAt(float u, float v) {
+    cv::Vec3f c = kGrBase;
+    auto over = [&](const cv::Vec3f& col, float a) {
+        c = c * (1.f - a) + col * a;
+    };
+    // Paler muzzle, cheeks and chin, with a brighter pair of cheek pads so
+    // the lower face is modelled rather than one flat wash of green.
+    over(kGrLight, ellipseMask(u, v, 0.f, 0.95f, 0.74f, 0.72f, 0.55f));
+    over(kGrLight, ellipseMask(u, v, -0.72f, 0.52f, 0.40f, 0.34f, 0.9f) * 0.7f);
+    over(kGrLight, ellipseMask(u, v, 0.72f, 0.52f, 0.40f, 0.34f, 0.9f) * 0.7f);
+    // Yellow-green around the eyes. The mesh leaves the eye openings as holes,
+    // so this rings the lids rather than covering anyone's eyes.
+    over(kGrEye, ellipseMask(u, v, -0.52f, 0.00f, 0.48f, 0.34f, 0.70f));
+    over(kGrEye, ellipseMask(u, v, 0.52f, 0.00f, 0.48f, 0.34f, 0.70f));
+    // The scowl: a heavy brow over each eye, sloping down toward the nose.
+    // Mirrored, so both inner ends drop.
+    over(kGrBrow, ellipseMaskRot(u, v, -0.54f, -0.40f, 0.52f, 0.19f, 0.34f, 0.34f));
+    over(kGrBrow, ellipseMaskRot(u, v, 0.54f, -0.40f, 0.52f, 0.19f, 0.34f, -0.34f));
+    // A hollow just under each brow, so the eyes sit back in the skull instead
+    // of being two flat yellow patches painted on the front of it. Kept narrow
+    // and high: any lower and it swallows the eye colour.
+    over(kGrDark, ellipseMask(u, v, -0.52f, -0.24f, 0.44f, 0.13f, 0.95f) * 0.40f);
+    over(kGrDark, ellipseMask(u, v, 0.52f, -0.24f, 0.44f, 0.13f, 0.95f) * 0.40f);
     return c;
 }
 
@@ -236,7 +283,7 @@ const char* kModelGlobs[] = {
 // as well as a bright one.
 void fillTriangleSmooth(cv::Mat& img, const cv::Point2f p[3],
                         const cv::Vec3f c[3], const cv::Point2f uv[3],
-                        float invMeanLuma, float furDepth) {
+                        float invMeanLuma, float furDepth, float furCrown) {
     const float area = (p[1].x - p[0].x) * (p[2].y - p[0].y) -
                        (p[2].x - p[0].x) * (p[1].y - p[0].y);
     if (std::fabs(area) < 1e-6f) return;
@@ -266,7 +313,11 @@ void fillTriangleSmooth(cv::Mat& img, const cv::Point2f p[3],
             // Fur, in head-frame coordinates so it tracks the face.
             const float fu = uv[0].x * w0 + uv[1].x * w1 + uv[2].x * w2;
             const float fv = uv[0].y * w0 + uv[1].y * w1 + uv[2].y * w2;
-            const float fur = 1.f + furDepth * furAt(fu, fv);
+            // Shagginess can grow toward the crown: v is negative above the
+            // eye line, so this leaves the muzzle smooth and roughs up the
+            // forehead, which is most of what makes a coat look unkempt.
+            const float depth = furDepth * (1.f + furCrown * clampf(-fv, 0.f, 1.f));
+            const float fur = 1.f + depth * furAt(fu, fv);
 
             // The skin underneath, as a shading term. Rec.601 luma of what is
             // already in the buffer -- free, because the paint is opaque and
@@ -743,19 +794,24 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
         //  * the wireframe sits on the landmarks themselves: a couple of
         //    pixels for the dot radius and line width is enough;
         //  * the animal filters paint the mesh but *also* hang 3D ears and a
-        //    muzzle well outside the face box -- an ear reaches ~1.3x the head
-        //    half-width, and a pig's stand above the crown. Too small a margin
-        //    here does not merely waste the saving, it slices the ears off
-        //    against the edge of the re-encoded region;
+        //    muzzle well outside the face box. Measured against the canonical
+        //    head: the grinch's ears reach 27% of a face-width past each side,
+        //    and the pig's stand 30% of a face-height above the crown -- so the
+        //    margins below are the worst case plus slack for head rotation.
+        //    Too small a margin here does not merely waste the saving, it
+        //    slices the ears off against the edge of the re-encoded region --
+        //    which is what a 3 px margin, left over from when these filters
+        //    only painted the mesh, was doing;
         //  * the warps need room for their Gaussian falloff and the tears.
         const bool wireOnly = (filter == Filter::FaceMesh);
         const bool animal = (filter == Filter::DogFace ||
-                             filter == Filter::PigFace);
+                             filter == Filter::PigFace ||
+                             filter == Filter::Grinch);
         int mx, mtop, mbot;
         if (wireOnly) {
             mx = mtop = mbot = 3;
         } else if (animal) {
-            mx = std::max(10, f.width * 3 / 10);
+            mx = std::max(10, f.width * 2 / 5);
             mtop = std::max(10, f.height * 2 / 5);
             mbot = std::max(8, f.height / 6);
         } else {
@@ -794,6 +850,8 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applyAnimalFace(roi, f, off, phase, face3d::Species::Dog);
         } else if (filter == Filter::PigFace) {
             applyAnimalFace(roi, f, off, phase, face3d::Species::Pig);
+        } else if (filter == Filter::Grinch) {
+            applyAnimalFace(roi, f, off, phase, face3d::Species::Grinch);
         }
     }
 }
@@ -1073,7 +1131,9 @@ void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
     // let the triangles interpolate between them. Evaluating per vertex rather
     // than per triangle is what makes the markings smooth across the mesh.
     const bool isPig = (species == face3d::Species::Pig);
-    const float furDepth = isPig ? kPigFur : kDogFur;
+    const bool isGrinch = (species == face3d::Species::Grinch);
+    const float furDepth = isGrinch ? kGrinchFur : (isPig ? kPigFur : kDogFur);
+    const float furCrown = isGrinch ? 1.40f : 0.f;
 
     std::vector<cv::Vec3f> vcol(f.mesh.size());
     std::vector<cv::Point2f> vpos(f.mesh.size());
@@ -1083,8 +1143,9 @@ void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
         vpos[i] = cv::Point2f(q.x - org.x, q.y - org.y);
         const cv::Point2f d = q - eyeMid;
         vuv[i] = cv::Point2f(dot(d, f.right) * invEye, dot(d, f.down) * invEye);
-        vcol[i] = isPig ? pigColourAt(vuv[i].x, vuv[i].y)
-                        : dogColourAt(vuv[i].x, vuv[i].y);
+        vcol[i] = isGrinch ? grinchColourAt(vuv[i].x, vuv[i].y)
+                  : isPig  ? pigColourAt(vuv[i].x, vuv[i].y)
+                           : dogColourAt(vuv[i].x, vuv[i].y);
     }
 
     // Mean brightness of the face, so the shading term below is relative to
@@ -1109,7 +1170,7 @@ void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
         const cv::Point2f tri[3] = {vpos[ia], vpos[ib], vpos[ic]};
         const cv::Vec3f col[3] = {vcol[ia], vcol[ib], vcol[ic]};
         const cv::Point2f uv[3] = {vuv[ia], vuv[ib], vuv[ic]};
-        fillTriangleSmooth(ov, tri, col, uv, invMeanLuma, furDepth);
+        fillTriangleSmooth(ov, tri, col, uv, invMeanLuma, furDepth, furCrown);
     }
     // Ears and nose on top, as real geometry. They cannot come from the face
     // mesh -- it stops at the face -- so they are oriented by a basis measured
@@ -1124,7 +1185,8 @@ Filter nextFilter(Filter f) {
         case Filter::Crying:   return Filter::FaceMesh;
         case Filter::FaceMesh: return Filter::DogFace;
         case Filter::DogFace:  return Filter::PigFace;
-        case Filter::PigFace:  return Filter::None;
+        case Filter::PigFace:  return Filter::Grinch;
+        case Filter::Grinch:   return Filter::None;
     }
     return Filter::None;
 }
@@ -1137,6 +1199,7 @@ const char* filterName(Filter f) {
         case Filter::FaceMesh: return "Face Mesh";
         case Filter::DogFace:  return "Dog Face";
         case Filter::PigFace:  return "Pig Face";
+        case Filter::Grinch:   return "Grinch";
     }
     return "";
 }
