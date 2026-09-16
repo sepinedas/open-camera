@@ -96,6 +96,11 @@ const cv::Vec3f kDogBase(74, 132, 190);    // BGR: tan coat
 const cv::Vec3f kDogMask(38, 64, 104);     // darker patches around the eyes
 const cv::Vec3f kDogMuzzle(226, 238, 248); // pale muzzle and brow blaze
 const cv::Vec3f kDogNose(26, 24, 24);      // near-black nose leather
+constexpr float kFurDepth = 0.085f;        // fur contrast; subtle on purpose
+// How far the subject's own shading may push the paint. Wide enough to keep
+// real modelling, tight enough that a blown highlight or deep shadow does not
+// turn the coat white or black.
+constexpr float kShadeMin = 0.62f, kShadeMax = 1.42f;
 
 // 1 inside the ellipse, easing to 0 across the outer `soft` fraction of it.
 float ellipseMask(float u, float v, float cu, float cv_, float ru, float rv,
@@ -103,6 +108,40 @@ float ellipseMask(float u, float v, float cu, float cv_, float ru, float rv,
     const float du = (u - cu) / ru, dv = (v - cv_) / rv;
     const float d = std::sqrt(du * du + dv * dv);
     return clamp01((1.f - d) / std::max(0.05f, soft));
+}
+
+// Integer hash -> 0..1. No transcendentals: this runs per pixel, and a
+// sin-based hash would cost more than the rest of the shading put together.
+float hash21(int x, int y) {
+    // Multiply as unsigned: the signed form overflows for x >= 6, which is
+    // undefined behaviour, and at -O2 it does not merely give odd numbers.
+    uint32_t h = (uint32_t)x * 374761393u ^ (uint32_t)y * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return (float)(h & 0xFFFFFFu) * (1.f / (float)0xFFFFFF);
+}
+
+// Smoothly interpolated value noise over that hash.
+float valueNoise(float x, float y) {
+    const float fx = std::floor(x), fy = std::floor(y);
+    const int ix = (int)fx, iy = (int)fy;
+    float sx = x - fx, sy = y - fy;
+    sx = sx * sx * (3.f - 2.f * sx); // smoothstep, so cells do not show
+    sy = sy * sy * (3.f - 2.f * sy);
+    const float a = hash21(ix, iy), b = hash21(ix + 1, iy);
+    const float c = hash21(ix, iy + 1), d = hash21(ix + 1, iy + 1);
+    return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
+}
+
+// Fine fur detail, in the head's frame so its scale follows the face. Sampled
+// much finer across the face than down it, which stretches the noise into
+// strokes that read as fur. An earlier version multiplied two crossed sine
+// bands; that is cheaper still, but the product is a regular lattice and came
+// out looking like woven fabric. Two octaves, returning roughly -1..1.
+float furAt(float u, float v) {
+    const float n = valueNoise(u * 88.f, v * 20.f) +
+                    0.45f * valueNoise(u * 171.f, v * 43.f);
+    return (n / 1.45f) * 2.f - 1.f;
 }
 
 // The coat colour at one point on the face, blended front to back.
@@ -160,8 +199,22 @@ const char* kModelGlobs[] = {
 // Flat-filling each triangle instead (cv::fillConvexPoly with one colour) is
 // simpler but shows every one of the mesh's 852 facets, worst exactly where a
 // marking has a hard edge -- the nose came out as a polygonal star.
+// Fill one triangle with its three vertex colours interpolated across it, then
+// add per-pixel polish: fine fur, and the *face's own* shading.
+//
+// The markings are low-frequency, so interpolating them per vertex is plenty.
+// Fur is not -- it has to be evaluated per pixel, which is why the head-frame
+// coordinates are interpolated alongside the colour.
+//
+// `invMeanLuma` normalises the face's brightness. Multiplying the paint by how
+// light or dark the skin underneath is keeps the subject's own modelling --
+// the shadow under the nose, the line of the lips, the fall-off at the jaw --
+// so the dog looks painted onto a face instead of pasted over one. Normalising
+// by the region's mean rather than a constant keeps that working in a dim room
+// as well as a bright one.
 void fillTriangleSmooth(cv::Mat& img, const cv::Point2f p[3],
-                        const cv::Vec3f c[3]) {
+                        const cv::Vec3f c[3], const cv::Point2f uv[3],
+                        float invMeanLuma) {
     const float area = (p[1].x - p[0].x) * (p[2].y - p[0].y) -
                        (p[2].x - p[0].x) * (p[1].y - p[0].y);
     if (std::fabs(area) < 1e-6f) return;
@@ -186,9 +239,23 @@ void fillTriangleSmooth(cv::Mat& img, const cv::Point2f p[3],
             // A small negative tolerance keeps shared edges from falling
             // between two triangles and leaving a seam of bare skin.
             if (w0 < -1e-3f || w1 < -1e-3f || w2 < -1e-3f) continue;
-            const cv::Vec3f col = c[0] * w0 + c[1] * w1 + c[2] * w2;
+            cv::Vec3f col = c[0] * w0 + c[1] * w1 + c[2] * w2;
+
+            // Fur, in head-frame coordinates so it tracks the face.
+            const float fu = uv[0].x * w0 + uv[1].x * w1 + uv[2].x * w2;
+            const float fv = uv[0].y * w0 + uv[1].y * w1 + uv[2].y * w2;
+            const float fur = 1.f + kFurDepth * furAt(fu, fv);
+
+            // The skin underneath, as a shading term. Rec.601 luma of what is
+            // already in the buffer -- free, because the paint is opaque and
+            // this pixel is about to be overwritten anyway.
+            const cv::Vec3b& d = row[x];
+            const float luma = 0.114f * d[0] + 0.587f * d[1] + 0.299f * d[2];
+            const float shade = clampf(luma * invMeanLuma, kShadeMin, kShadeMax);
+
+            const float g = fur * shade;
             for (int k = 0; k < 3; ++k)
-                row[x][k] = cv::saturate_cast<uchar>(col[k]);
+                row[x][k] = cv::saturate_cast<uchar>(col[k] * g);
         }
     }
 }
@@ -964,12 +1031,29 @@ void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
     // than per triangle is what makes the markings smooth across the mesh.
     std::vector<cv::Vec3f> vcol(f.mesh.size());
     std::vector<cv::Point2f> vpos(f.mesh.size());
+    std::vector<cv::Point2f> vuv(f.mesh.size());
     for (size_t i = 0; i < f.mesh.size(); ++i) {
         const cv::Point2f q = f.mesh[i] - off;
         vpos[i] = cv::Point2f(q.x - org.x, q.y - org.y);
         const cv::Point2f d = q - eyeMid;
-        vcol[i] = dogColourAt(dot(d, f.right) * invEye, dot(d, f.down) * invEye);
+        vuv[i] = cv::Point2f(dot(d, f.right) * invEye, dot(d, f.down) * invEye);
+        vcol[i] = dogColourAt(vuv[i].x, vuv[i].y);
     }
+
+    // Mean brightness of the face, so the shading term below is relative to
+    // this subject in this light rather than to an assumed exposure. Sampled
+    // on a coarse grid: it only has to be approximately right.
+    double lumaSum = 0.0;
+    int lumaN = 0;
+    for (int y = 0; y < ov.rows; y += 4) {
+        const cv::Vec3b* r = ov.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < ov.cols; x += 4) {
+            lumaSum += 0.114f * r[x][0] + 0.587f * r[x][1] + 0.299f * r[x][2];
+            ++lumaN;
+        }
+    }
+    const float meanLuma = lumaN ? (float)(lumaSum / lumaN) : 128.f;
+    const float invMeanLuma = 1.f / std::max(16.f, meanLuma);
 
     const auto& tess = MpConn::kFaceLandmarksTesselation;
     for (int t = 0; t < kMeshTriangles; ++t) {
@@ -977,7 +1061,8 @@ void FaceFilter::applyDogFace(cv::Mat& frame, const Face& f,
                   ic = tess[3 * t + 2][0];
         const cv::Point2f tri[3] = {vpos[ia], vpos[ib], vpos[ic]};
         const cv::Vec3f col[3] = {vcol[ia], vcol[ib], vcol[ic]};
-        fillTriangleSmooth(ov, tri, col);
+        const cv::Point2f uv[3] = {vuv[ia], vuv[ib], vuv[ic]};
+        fillTriangleSmooth(ov, tri, col, uv, invMeanLuma);
     }
     // Ears and nose on top, as real geometry. They cannot come from the face
     // mesh -- it stops at the face -- so they are oriented by a basis measured

@@ -309,6 +309,23 @@ triangle, so the 852-triangle list is derived from that table rather than
 carried as a second one — with a `static_assert` that the structure still
 holds, so a future table reshuffle cannot silently produce garbage geometry.
 
+Two things do the polishing. The paint is multiplied by the **subject's own
+luminance**, normalised by the mean over the face, so their real modelling —
+the shadow under the nose, the line of the lips, the fall-off at the jaw —
+survives, and the dog looks painted onto a face rather than pasted over one.
+Normalising by the region's mean rather than a constant keeps that working in
+a dim room as well as a bright one, and it costs nothing: the paint is opaque,
+so the pixel being read is one that is about to be overwritten.
+
+On top of that goes **fur** — two octaves of value noise sampled far finer
+across the face than down it, so it stretches into strokes. The markings stay
+per-vertex (they are low frequency and interpolate fine); only the fur needs
+per-pixel evaluation, which is why the head-frame coordinates are interpolated
+alongside the colour. The noise is hashed with integer arithmetic rather than
+`sin`, so the per-pixel cost is a handful of integer ops. The ears get a
+coarser per-vertex version of the same idea, enough to stop them reading as
+moulded plastic beside a furred face.
+
 Each marking is placed in the head's own frame — eye-separation units from the
 eye midpoint — so it is defined relative to the eyes and nose and holds through
 scale, roll and turn. Every *vertex* is coloured and the triangles interpolate

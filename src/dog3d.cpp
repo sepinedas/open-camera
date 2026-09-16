@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include <opencv2/imgproc.hpp>
@@ -31,9 +32,22 @@ const Vec3f kEarCol(62, 96, 138);      // BGR: brown, matching the painted coat
 const Vec3f kEarInnerCol(78, 92, 126); // darker inner hollow
 const Vec3f kNoseCol(30, 28, 28);      // near-black leather
 constexpr float kNoseR = 0.24f;        // radius of the nose dome
+constexpr float kEarMottle = 0.07f;    // per-vertex coat variation on the ears
 
 float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// A little per-vertex colour variation, so the ears do not read as moulded
+// plastic beside the furred face. The ear grid is only 13x14, so this is a
+// soft mottle rather than the fine strokes painted onto the mesh -- which is
+// about right for an ear anyway, where the fur is shorter and flatter.
+float mottle(int a, int b) {
+    // Unsigned multiply: the signed form overflows and is undefined.
+    uint32_t h = (uint32_t)a * 374761393u ^ (uint32_t)b * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return (float)(h & 0xFFFFFFu) * (1.f / (float)0xFFFFFF) * 2.f - 1.f;
 }
 
 Vec3f norm(const Vec3f& v) {
@@ -147,7 +161,8 @@ Mesh buildEar(float side, float wiggle, const Head& h) {
             // Darker inner hollow down the centre of the lobe.
             const float inF = clampf((t - 0.18f) * 1.5f, 0.f, 1.f) *
                               clampf(1.f - std::fabs(a) * 1.5f, 0.f, 1.f);
-            const Vec3f col = pink * (1.f - inF) + inner * inF;
+            const Vec3f col = (pink * (1.f - inF) + inner * inF) *
+                              (1.f + kEarMottle * mottle(ti, ai * 7 + (int)side));
             g[ti][ai] = m.add(p, col);
         }
     }
