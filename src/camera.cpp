@@ -114,8 +114,10 @@ std::string webcamLabel(int index, const std::string& card) {
     return card.empty() ? "USB camera " + std::to_string(index) : card;
 }
 
-// Try one V4L2 index; returns true and leaves `cap` open on success.
-bool tryWebcam(cv::VideoCapture& cap, int index, int w, int h) {
+// Try one V4L2 index; returns true and leaves `cap` open on success, with the
+// frame it grabbed in `probe` -- that frame is the only reliable statement of
+// the geometry the driver actually negotiated.
+bool tryWebcam(cv::VideoCapture& cap, int index, int w, int h, cv::Mat& probe) {
     if (!cap.open(index, cv::CAP_V4L2)) return false;
     // Prefer MJPG: even on the Pi 5's USB 3.0 ports, an uncompressed YUYV
     // stream at 1080p30 eats most of the bus, and most webcams only offer
@@ -123,7 +125,6 @@ bool tryWebcam(cv::VideoCapture& cap, int index, int w, int h) {
     cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
     cap.set(cv::CAP_PROP_FRAME_WIDTH, w);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, h);
-    cv::Mat probe;
     if (!cap.read(probe) || probe.empty()) {
         cap.release();
         return false;
@@ -165,6 +166,10 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg, const CameraSource& src)
     std::unique_ptr<Camera> cam(new Camera());
     cam->src_ = src;
 
+    // The frame each path grabs to prove the source works. It is also what the
+    // geometry is read from below, so it is shared rather than local.
+    cv::Mat probe;
+
     // Preferred Pi path: raw NV12 delivered to OpenCV untouched, so the GPU can
     // convert it at display time. Ask OpenCV not to auto-convert to BGR; a
     // successful raw grab comes back as a single-channel planar buffer
@@ -175,7 +180,6 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg, const CameraSource& src)
         std::string pipe = picamPipelineNV12(cfg.width, cfg.height, src.name);
         if (!cam->cap_.open(pipe, cv::CAP_GSTREAMER)) return false;
         cam->cap_.set(cv::CAP_PROP_CONVERT_RGB, 0);
-        cv::Mat probe;
         if (cam->cap_.read(probe) && !probe.empty() && probe.channels() == 1 &&
             probe.rows % 3 == 0) {
             cam->format_ = PixelFormat::NV12;
@@ -196,7 +200,6 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg, const CameraSource& src)
         for (const char* fmt : kFormats) {
             std::string pipe = picamPipelineBGR(fmt, cfg.width, cfg.height, src.name);
             if (!cam->cap_.open(pipe, cv::CAP_GSTREAMER)) continue;
-            cv::Mat probe;
             if (cam->cap_.read(probe) && !probe.empty()) {
                 cam->format_ = PixelFormat::BGR;
                 cam->desc_ = std::string("Pi camera (libcamera, ") + fmt +
@@ -216,7 +219,7 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg, const CameraSource& src)
     auto openWebcam = [&]() -> bool {
         cam->format_ = PixelFormat::BGR;
         if (src.index < 0) return false;
-        if (!tryWebcam(cam->cap_, src.index, cfg.width, cfg.height)) return false;
+        if (!tryWebcam(cam->cap_, src.index, cfg.width, cfg.height, probe)) return false;
         cam->desc_ = src.label + " (/dev/video" + std::to_string(src.index) + ")";
         return true;
     };
@@ -226,10 +229,20 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg, const CameraSource& src)
         return nullptr;
 
     // For the BGR paths, record the actual negotiated geometry (the NV12 path
-    // already set width_/height_ from the raw buffer above).
+    // already set width_/height_ from the raw buffer above). The frame we just
+    // grabbed is the authority: with libcamerasrc, OpenCV frequently cannot
+    // read the caps off the pipeline at open time ("GStreamer warning: cannot
+    // query video width/height") and CAP_PROP_FRAME_WIDTH comes back as 0,
+    // which used to leave the app quietly assuming the *requested* --size
+    // rather than what the ISP actually delivered.
     if (cam->format_ != PixelFormat::NV12) {
-        cam->width_ = static_cast<int>(cam->cap_.get(cv::CAP_PROP_FRAME_WIDTH));
-        cam->height_ = static_cast<int>(cam->cap_.get(cv::CAP_PROP_FRAME_HEIGHT));
+        if (!probe.empty()) {
+            cam->width_ = probe.cols;
+            cam->height_ = probe.rows;
+        } else {
+            cam->width_ = static_cast<int>(cam->cap_.get(cv::CAP_PROP_FRAME_WIDTH));
+            cam->height_ = static_cast<int>(cam->cap_.get(cv::CAP_PROP_FRAME_HEIGHT));
+        }
     }
     double fps = cam->cap_.get(cv::CAP_PROP_FPS);
     cam->fps_ = (fps > 1.0 && fps < 121.0) ? fps : 30.0;
