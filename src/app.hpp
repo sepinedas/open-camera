@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <SDL2/SDL.h>
 #include <opencv2/core.hpp>
@@ -65,6 +66,16 @@ private:
     // when `center`. Used for the zoom factor and the gallery timestamp.
     void drawText(int x, int topY, const std::string& s, int scale,
                   SDL_Color c, bool center);
+    // Centred translucent pill with text inside: the transient labels over the
+    // live preview (zoom factor, filter name, camera name).
+    void drawToast(const std::string& s, int topY, int scale);
+    // Show `s` over the preview for `ms`. One slot, so a newer message replaces
+    // an older one instead of the two overlapping.
+    void showToast(const std::string& s, Uint32 ms);
+    // The buttons for `m`, with the state-dependent flags filled in. Layout has
+    // to be identical when drawing and when hit-testing a tap, so both go
+    // through here rather than calling Menu::layout() with their own flags.
+    std::vector<Button> buttonsFor(Mode m) const;
     void drawGalleryButton(const Button& b, Uint8 alpha); // last-shot thumbnail
     // Battery gauge + percentage in the top-right corner, drawn on every screen
     // that shows content. No-op without a UPS HAT. It pulses red and grows a
@@ -78,6 +89,9 @@ private:
 
     // --- actions ---
     void capturePhoto();
+    // Move to the next attached camera (Pi camera <-> USB webcam, or between
+    // several webcams). No-op with only one camera.
+    void switchCamera();
     void playCurrentVideo();
     void goHome();          // leave the camera for the welcome screen
     void enterSleep();      // blank the screen (and power the panel off on a Pi)
@@ -100,6 +114,10 @@ private:
 
     Config cfg_;
     std::unique_ptr<Camera> cam_;
+    // Every camera found at startup, in preference order; cam_ is open on one
+    // of them and the switch button rotates through the rest. A source that
+    // fails to open is dropped, so this only ever holds cameras that work.
+    std::vector<CameraSource> sources_;
     std::unique_ptr<Gallery> gallery_;
     std::unique_ptr<Battery> battery_; // null when no UPS HAT (D) is fitted
     Menu menu_;
@@ -128,7 +146,10 @@ private:
     // Live facial-expression filter (cycled by the smiley button).
     Filter filter_ = Filter::None;
     double filterPhase_ = 0.0;      // free-running counter for tear animation
-    Uint32 filterLabelUntil_ = 0;   // show the filter name briefly after a change
+
+    // Transient label over the preview (filter or camera name after a change).
+    std::string toast_;
+    Uint32 toastUntil_ = 0;
 
     cv::Mat lastNative_;       // most recent live frame, camera-native format
     cv::Mat filteredNative_;   // NV12 copy with the face region reshaped in place

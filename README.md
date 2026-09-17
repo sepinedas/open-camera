@@ -6,6 +6,10 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
 - Works with the **Raspberry Pi camera module** (via libcamera / GStreamer) or
   any **USB webcam** (via V4L2) — auto-detected at startup, or selected
   explicitly with `--camera picam` / `--camera webcam`.
+- **Two cameras at once**: with a USB webcam plugged in alongside the Pi camera
+  (or with two webcams), a **switch-camera button** appears in the camera menu
+  and flips the live preview between them. The button only shows up when there
+  is a second camera to switch to.
 - Runs on a **headless Raspberry Pi** with **no desktop, X11 or Wayland** — it
   draws straight to the **HDMI** output through DRM/KMS (SDL2's `kmsdrm`
   driver, selected automatically).
@@ -17,8 +21,8 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
 - Fullscreen live preview with a **translucent, auto-hiding menu**: a few
   seconds after your last tap the menu fades away; tap anywhere to bring it
   back.
-- Menu buttons are **translucent icons, no text**: home, filter, gallery,
-  shutter.
+- Menu buttons are **translucent icons, no text**: home, filter, switch camera
+  (only with a second camera attached), gallery, shutter.
 - The **live preview fills the whole screen** — it's scaled to the panel's
   aspect ratio (cropping the overflow) so there are no letterbox bars.
 - **Pinch-to-zoom** with two fingers (digital, up to 4×); the magnification
@@ -54,6 +58,7 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
 | --- | --- |
 | Welcome screen with a Lego-brick camera; Start / Sleep options | `Mode::Welcome` draws `drawLegoCamera` (bricks + lens in `icons.cpp`); Sleep blanks the panel via `vcgencmd display_power` and wakes on a double-tap |
 | Runs with a webcam **or** Pi camera | `Camera` auto-detects: libcamera (GStreamer) first, then V4L2 webcam; force one with `--camera picam` / `--camera webcam` |
+| Switch between two cameras while running | `Camera::sources()` enumerates the V4L2 nodes up front; the switch button reopens the preview on the next one (`App::switchCamera`) |
 | Written in C++ | C++20, CMake build |
 | Translucent, auto-hiding menu | `Menu` fades the icon row out ~3.5 s after the last tap; any tap wakes it |
 | Photos, zoom, gallery, delete | shutter / gallery icons; pinch-to-zoom |
@@ -209,10 +214,26 @@ app transparently falls back to converting to BGR with libcamera's
 decoupling `queue`, so even the fallback is faster than a single-threaded
 convert.
 
-If you have **more than one camera** (e.g. the IMX500 *and* a USB webcam),
-`--camera auto` tries the first libcamera camera before falling back to a
-webcam. Force the source explicitly with `--camera picam` / `--camera webcam`,
-and pick a specific libcamera camera with `--picam-name` — list the ids with:
+### More than one camera
+
+With **more than one camera** attached (e.g. the IMX500 *and* a USB webcam, or
+two webcams), a **switch-camera button** — a camera inside two circling arrows —
+appears in the camera menu, between the filter and gallery buttons. Tapping it
+moves the live preview to the next camera and shows its name briefly on screen;
+tapping again cycles back round. The zoom you had set is kept across the switch,
+and captures come from whichever camera is live.
+
+The list is built at startup: `--camera auto` puts the Pi camera first and then
+every `/dev/video*` node that reports itself as a real video-capture device
+(`VIDIOC_QUERYCAP`), which skips the metadata nodes UVC webcams expose and the
+Pi's own ISP/CSI nodes. A camera that won't open is dropped from the list, so
+the button never offers a device that isn't there — and it isn't drawn at all
+when only one camera works, leaving the usual four buttons.
+
+`--camera picam` / `--camera webcam` narrow the list to one kind (so they also
+turn the switch button off unless you have two webcams), `--webcam-index N`
+pins a single `/dev/videoN`, and `--picam-name` picks a specific libcamera
+camera — list the ids with:
 
 ```sh
 rpicam-hello --list-cameras
@@ -689,6 +710,7 @@ line.
 | camera (welcome) | start the live camera |
 | crescent moon (welcome) | sleep — blank the screen; double-tap to wake |
 | house (camera) | back to the welcome screen |
+| camera in circling arrows | switch to the next camera (only shown when a second one is attached) |
 | last-shot thumbnail (framed-landscape icon until the first capture) | open the gallery |
 | ring with dot | take a photo (plays a shutter flash) |
 | chevron (gallery) | back to the camera |

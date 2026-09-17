@@ -29,6 +29,7 @@ enum class Action {
     ConfirmYes,  // confirm deletion
     ConfirmNo,   // cancel deletion
     CycleFilter, // cycle the live facial-expression filter
+    SwitchCamera, // switch to the next camera (Pi camera <-> USB webcam)
     StartCamera, // welcome -> live camera
     Sleep,       // welcome -> blank the screen (display sleep)
     Home,        // camera -> welcome screen

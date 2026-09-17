@@ -2,9 +2,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <thread>
 #include <vector>
+
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <opencv2/imgproc.hpp>
 
@@ -58,6 +64,56 @@ std::string picamPipelineBGR(const std::string& format, int w, int h,
            " ! appsink drop=true max-buffers=2";
 }
 
+// Ask /dev/videoN what it is, without starting a stream. Returns false unless
+// the node can actually deliver captured video to userspace, which rules out
+// the two kinds of node that are not webcams:
+//   * the metadata node every UVC camera exposes next to its video node (it
+//     reports V4L2_CAP_META_CAPTURE, not VIDEO_CAPTURE), and
+//   * the Pi's own CSI receiver, ISP and codec nodes, which do report video
+//     capture but belong to libcamera (or to the hardware encoder) -- opened
+//     as a plain webcam they deliver either nothing or raw Bayer frames.
+// On success `card` gets the driver's name for the device, which is what the
+// switch button shows ("HD Pro Webcam C920").
+bool queryCapture(int index, std::string& card) {
+    std::string path = "/dev/video" + std::to_string(index);
+    int fd = ::open(path.c_str(), O_RDWR | O_NONBLOCK);
+    if (fd < 0) return false;
+    v4l2_capability cap{};
+    bool ok = ::ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0;
+    ::close(fd);
+    if (!ok) return false;
+
+    // device_caps describes this node; capabilities describes the whole device
+    // (all its nodes together), so a metadata node would pass on the latter.
+    unsigned caps = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) ? cap.device_caps
+                                                              : cap.capabilities;
+    if (!(caps & V4L2_CAP_VIDEO_CAPTURE) || !(caps & V4L2_CAP_STREAMING))
+        return false;
+    // A memory-to-memory node (the hardware codecs) advertises capture *and*
+    // output; a camera never outputs.
+    if (caps & V4L2_CAP_VIDEO_OUTPUT) return false;
+
+    auto field = [](const __u8* p, size_t n) {
+        const char* s = reinterpret_cast<const char*>(p);
+        return std::string(s, ::strnlen(s, n));
+    };
+    static const char* kLibcameraDrivers[] = {"bcm2835-isp", "bcm2835-codec",
+                                              "rp1-cfe", "unicam", "pispbe"};
+    std::string driver = field(cap.driver, sizeof(cap.driver));
+    for (const char* d : kLibcameraDrivers)
+        if (driver == d) return false;
+
+    card = field(cap.card, sizeof(cap.card));
+    return true;
+}
+
+// Short label for a webcam, shown in the toast after a switch. The driver's
+// card name is the friendly one ("HD Pro Webcam C920"); the node number is the
+// fallback for a driver that leaves it blank.
+std::string webcamLabel(int index, const std::string& card) {
+    return card.empty() ? "USB camera " + std::to_string(index) : card;
+}
+
 // Try one V4L2 index; returns true and leaves `cap` open on success.
 bool tryWebcam(cv::VideoCapture& cap, int index, int w, int h) {
     if (!cap.open(index, cv::CAP_V4L2)) return false;
@@ -76,8 +132,38 @@ bool tryWebcam(cv::VideoCapture& cap, int index, int w, int h) {
 }
 } // namespace
 
-std::unique_ptr<Camera> Camera::open(const Config& cfg) {
+// Enumerate rather than probe: opening ten /dev/video nodes in turn (what the
+// webcam fallback used to do) costs a stream start each, far too slow to run
+// just to decide whether there is a second camera to offer.
+std::vector<CameraSource> Camera::sources(const Config& cfg) {
+    std::vector<CameraSource> out;
+
+    // The Pi camera goes first, so --camera auto still prefers it.
+    if (cfg.camera != CameraKind::Webcam)
+        out.push_back({CameraKind::PiCam, -1, cfg.picamName, "Pi camera"});
+
+    if (cfg.camera != CameraKind::PiCam) {
+        if (cfg.webcamIndex >= 0) {
+            // Explicitly forced: offer it whatever the node says about itself.
+            std::string card;
+            queryCapture(cfg.webcamIndex, card);
+            out.push_back({CameraKind::Webcam, cfg.webcamIndex, "",
+                           webcamLabel(cfg.webcamIndex, card)});
+        } else {
+            for (int i = 0; i < 64; ++i) {
+                std::string card;
+                if (queryCapture(i, card))
+                    out.push_back({CameraKind::Webcam, i, "",
+                                   webcamLabel(i, card)});
+            }
+        }
+    }
+    return out;
+}
+
+std::unique_ptr<Camera> Camera::open(const Config& cfg, const CameraSource& src) {
     std::unique_ptr<Camera> cam(new Camera());
+    cam->src_ = src;
 
     // Preferred Pi path: raw NV12 delivered to OpenCV untouched, so the GPU can
     // convert it at display time. Ask OpenCV not to auto-convert to BGR; a
@@ -86,14 +172,13 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg) {
     // (3 channels), NV12 capture isn't available -- fall through to the BGR
     // pipeline below.
     auto openPiNV12 = [&]() -> bool {
-        std::string pipe = picamPipelineNV12(cfg.width, cfg.height, cfg.picamName);
+        std::string pipe = picamPipelineNV12(cfg.width, cfg.height, src.name);
         if (!cam->cap_.open(pipe, cv::CAP_GSTREAMER)) return false;
         cam->cap_.set(cv::CAP_PROP_CONVERT_RGB, 0);
         cv::Mat probe;
         if (cam->cap_.read(probe) && !probe.empty() && probe.channels() == 1 &&
             probe.rows % 3 == 0) {
             cam->format_ = PixelFormat::NV12;
-            cam->kind_ = CameraKind::PiCam;
             cam->width_ = probe.cols;
             cam->height_ = probe.rows * 2 / 3; // strip the interleaved UV plane
             cam->desc_ = "Pi camera (libcamera, NV12 -> GPU convert)";
@@ -109,12 +194,11 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg) {
         // common ones in turn and keep the first that actually delivers a frame.
         static const char* kFormats[] = {"NV12", "YUV420", "RGBx", "BGRx", "RGB"};
         for (const char* fmt : kFormats) {
-            std::string pipe = picamPipelineBGR(fmt, cfg.width, cfg.height, cfg.picamName);
+            std::string pipe = picamPipelineBGR(fmt, cfg.width, cfg.height, src.name);
             if (!cam->cap_.open(pipe, cv::CAP_GSTREAMER)) continue;
             cv::Mat probe;
             if (cam->cap_.read(probe) && !probe.empty()) {
                 cam->format_ = PixelFormat::BGR;
-                cam->kind_ = CameraKind::PiCam;
                 cam->desc_ = std::string("Pi camera (libcamera, ") + fmt +
                              " -> CPU convert)";
                 return true;
@@ -131,31 +215,15 @@ std::unique_ptr<Camera> Camera::open(const Config& cfg) {
 
     auto openWebcam = [&]() -> bool {
         cam->format_ = PixelFormat::BGR;
-        cam->kind_ = CameraKind::Webcam;
-        if (cfg.webcamIndex >= 0) {
-            if (!tryWebcam(cam->cap_, cfg.webcamIndex, cfg.width, cfg.height)) return false;
-            cam->desc_ = "USB webcam /dev/video" + std::to_string(cfg.webcamIndex);
-            return true;
-        }
-        for (int i = 0; i < 10; ++i) {
-            if (tryWebcam(cam->cap_, i, cfg.width, cfg.height)) {
-                cam->desc_ = "USB webcam /dev/video" + std::to_string(i);
-                return true;
-            }
-        }
-        return false;
+        if (src.index < 0) return false;
+        if (!tryWebcam(cam->cap_, src.index, cfg.width, cfg.height)) return false;
+        cam->desc_ = src.label + " (/dev/video" + std::to_string(src.index) + ")";
+        return true;
     };
 
-    bool ok = false;
-    switch (cfg.camera) {
-        case CameraKind::PiCam:  ok = openPi(); break;
-        case CameraKind::Webcam: ok = openWebcam(); break;
-        case CameraKind::Auto:   ok = openPi() || openWebcam(); break;
-    }
-    if (!ok) {
-        std::cerr << "no camera could be opened\n";
+    // sources() never yields Auto, so the kind names one concrete backend.
+    if (!(src.kind == CameraKind::PiCam ? openPi() : openWebcam()))
         return nullptr;
-    }
 
     // For the BGR paths, record the actual negotiated geometry (the NV12 path
     // already set width_/height_ from the raw buffer above).

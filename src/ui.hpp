@@ -30,9 +30,12 @@ public:
     bool awake() const { return alpha() > 0; }
 
     // Build the button set for a mode. `hasVideo` adds a Play button in the
-    // gallery only when the selected item is a video.
+    // gallery only when the selected item is a video; `canSwitchCamera` adds
+    // the camera-switch button to the camera row only when a second camera is
+    // attached. Both flags must match between drawing and hit-testing, or the
+    // row is laid out differently for the two -- see App::buttonsFor().
     std::vector<Button> layout(Mode mode, int screenW, int screenH,
-                               bool hasVideo) const;
+                               bool hasVideo, bool canSwitchCamera = false) const;
 
     // Draw one button (translucent disc + icon) at the given menu alpha.
     static void drawButton(SDL_Renderer* ren, const Button& b, Uint8 alpha);

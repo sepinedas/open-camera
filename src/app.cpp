@@ -216,6 +216,30 @@ void App::drawText(int x, int topY, const std::string& s, int scale,
     SDL_DestroyTexture(t);
 }
 
+// Centred pill behind centred text. The pill is sized from the 8x8 bitmap font
+// drawText() scales up, so the padding stays proportional at any scale.
+void App::drawToast(const std::string& text, int topY, int scale) {
+    if (text.empty()) return;
+    // Truncate rather than overflow: a webcam's model name can be much wider
+    // than the panel at the scale the short labels are sized for.
+    std::size_t maxChars = (std::size_t)std::max(4, (int)(viewW_ * 0.92) / (8 * scale));
+    std::string s = text;
+    if (s.size() > maxChars)
+        s = maxChars > 6 ? s.substr(0, maxChars - 3) + "..." : s.substr(0, maxChars);
+
+    int tw = 8 * (int)s.size() * scale;
+    int pad = 8 * scale / 2;
+    roundedBoxRGBA(ren_, viewW_ / 2 - tw / 2 - pad, topY,
+                   viewW_ / 2 + tw / 2 + pad, topY + 8 * scale + pad,
+                   6, 0, 0, 0, 120);
+    drawText(viewW_ / 2, topY + pad / 2, s, scale, {255, 255, 255, 240}, true);
+}
+
+void App::showToast(const std::string& s, Uint32 ms) {
+    toast_ = s;
+    toastUntil_ = SDL_GetTicks() + ms;
+}
+
 // Newest photo/video in the output dir (timestamp names sort chronologically).
 static std::string newestMedia(const std::string& dir) {
     std::string best;
@@ -474,13 +498,25 @@ bool App::init(const Config& cfg) {
     cfg_ = cfg;
     if (!initDisplay()) return false;
 
-    cam_ = Camera::open(cfg_);
+    // Every camera attached, best first. The first one that actually starts
+    // becomes the live preview; the others stay behind the switch button. An
+    // entry that won't open is dropped, so the button never offers a camera
+    // that isn't there (a board with no Pi camera, an unplugged webcam).
+    sources_ = Camera::sources(cfg_);
+    while (!cam_ && !sources_.empty()) {
+        cam_ = Camera::open(cfg_, sources_.front());
+        if (!cam_) sources_.erase(sources_.begin());
+    }
     if (!cam_) {
         std::cerr << "startup failed: no camera\n";
         return false;
     }
     std::cout << "camera: " << cam_->description() << " " << cam_->width()
               << "x" << cam_->height() << " @ " << cam_->fps() << "fps\n";
+    if (sources_.size() > 1) {
+        std::cout << "cameras: " << sources_.size()
+                  << " attached; tap the switch button to change\n";
+    }
 
     battery_ = Battery::open(cfg_);
     if (battery_) std::cout << "battery: " << battery_->description() << "\n";
@@ -644,13 +680,13 @@ void App::onTap(int x, int y) {
     if (mode_ == Mode::Welcome) {
         // Welcome buttons are always shown, so a tap acts immediately.
         menu_.wake();
-        auto btns = menu_.layout(Mode::Welcome, viewW_, viewH_, false);
+        auto btns = buttonsFor(Mode::Welcome);
         dispatch(Menu::hitTest(btns, x, y));
         return;
     }
 
     if (mode_ == Mode::ConfirmDelete) {
-        auto btns = menu_.layout(mode_, viewW_, viewH_, false);
+        auto btns = buttonsFor(mode_);
         Action a = Menu::hitTest(btns, x, y);
         dispatch(a == Action::ConfirmYes ? Action::ConfirmYes : Action::ConfirmNo);
         return;
@@ -661,9 +697,13 @@ void App::onTap(int x, int y) {
     menu_.wake();
     if (!wasAwake) return;
 
-    bool hasVideo = gallery_ && !gallery_->empty() && gallery_->currentIsVideo();
-    auto btns = menu_.layout(mode_, viewW_, viewH_, hasVideo);
+    auto btns = buttonsFor(mode_);
     dispatch(Menu::hitTest(btns, x, y));
+}
+
+std::vector<Button> App::buttonsFor(Mode m) const {
+    bool hasVideo = gallery_ && !gallery_->empty() && gallery_->currentIsVideo();
+    return menu_.layout(m, viewW_, viewH_, hasVideo, sources_.size() > 1);
 }
 
 void App::dispatch(Action a) {
@@ -690,7 +730,10 @@ void App::dispatch(Action a) {
             break;
         case Action::CycleFilter:
             filter_ = nextFilter(filter_);
-            filterLabelUntil_ = SDL_GetTicks() + 1500;
+            showToast(filterName(filter_), 1500);
+            break;
+        case Action::SwitchCamera:
+            switchCamera();
             break;
         case Action::StartCamera:
             mode_ = Mode::Camera;
@@ -743,6 +786,66 @@ void App::capturePhoto() {
     std::cout << "saved " << path << "\n";
     flashStart_ = SDL_GetTicks(); // shutter flash animation
     refreshThumbnail();           // update the gallery-button preview
+}
+
+// Move to the next attached camera. The live device is released *before* the
+// next one is opened: two USB cameras on one controller can easily want more
+// bandwidth than the bus has, and holding both open would make the second fail
+// to start for a reason that has nothing to do with the second.
+void App::switchCamera() {
+    if (!cam_ || sources_.size() < 2) return;
+
+    const CameraSource current = cam_->source();
+    const double zoom = cam_->zoom(); // the user's framing, not the device's
+    auto it = std::find(sources_.begin(), sources_.end(), current);
+    const std::size_t at = (std::size_t)(it - sources_.begin()) % sources_.size();
+
+    cam_.reset();
+    std::unique_ptr<Camera> next;
+    std::vector<CameraSource> dead;
+    for (std::size_t step = 1; step < sources_.size() && !next; ++step) {
+        const CameraSource& s = sources_[(at + step) % sources_.size()];
+        next = Camera::open(cfg_, s);
+        if (!next) {
+            std::cerr << "camera: " << s.label << " would not start\n";
+            dead.push_back(s);
+        }
+    }
+
+    // Forget whatever refused to start, so the button stops offering it (and
+    // so a dead entry doesn't cost a failed open on every future switch).
+    if (!dead.empty()) {
+        sources_.erase(std::remove_if(sources_.begin(), sources_.end(),
+                                      [&](const CameraSource& s) {
+                                          return std::find(dead.begin(), dead.end(),
+                                                           s) != dead.end();
+                                      }),
+                       sources_.end());
+    }
+
+    if (!next) {
+        // Nothing else worked: go back to the camera that was already running.
+        next = Camera::open(cfg_, current);
+        if (!next) {
+            std::cerr << "camera: lost " << current.label
+                      << " and no other camera could be opened\n";
+            running_ = false;
+            return;
+        }
+    }
+    cam_ = std::move(next);
+
+    // The new source has its own size and pixel format, so the buffers held for
+    // the old one describe nothing now; blitCamera() rebuilds its texture from
+    // the next frame it is handed.
+    lastNative_.release();
+    filteredNative_.release();
+    cam_->setZoom(zoom);
+
+    showToast(cam_->source().label, 1800);
+    menu_.wake();
+    std::cout << "camera: " << cam_->description() << " " << cam_->width()
+              << "x" << cam_->height() << " @ " << cam_->fps() << "fps\n";
 }
 
 // Blocking playback of the selected video: renders frames at the source fps and
@@ -853,7 +956,7 @@ void App::renderWelcome() {
     drawLegoCamera(ren_, viewW_ / 2, (int)(viewH_ * 0.42), unit, 255);
 
     // Two always-visible controls with labels beneath them.
-    auto btns = menu_.layout(Mode::Welcome, viewW_, viewH_, false);
+    auto btns = buttonsFor(Mode::Welcome);
     for (const auto& b : btns) Menu::drawButton(ren_, b, 255);
     int lscale = std::max(2, std::min(viewH_ / 220, 3));
     for (const auto& b : btns) {
@@ -937,7 +1040,7 @@ void App::renderCamera() {
 
     if (menu_.awake()) {
         Uint8 a = menu_.alpha();
-        auto btns = menu_.layout(Mode::Camera, viewW_, viewH_, false);
+        auto btns = buttonsFor(Mode::Camera);
         for (const auto& b : btns) {
             if (b.action == Action::OpenGallery)
                 drawGalleryButton(b, a); // last-shot thumbnail
@@ -952,27 +1055,12 @@ void App::renderCamera() {
     if (z > 1.001 || now < zoomLabelUntil_) {
         char buf[16];
         std::snprintf(buf, sizeof(buf), "%.1fx", z);
-        int scale = std::max(2, viewH_ / 160);
-        int tw = 8 * (int)std::string(buf).size() * scale;
-        int pad = 8 * scale / 2;
-        roundedBoxRGBA(ren_, viewW_ / 2 - tw / 2 - pad, 12,
-                       viewW_ / 2 + tw / 2 + pad, 12 + 8 * scale + pad,
-                       6, 0, 0, 0, 110);
-        drawText(viewW_ / 2, 12 + pad / 2, buf, scale, {255, 255, 255, 235}, true);
+        drawToast(buf, 12, std::max(2, viewH_ / 160));
     }
 
-    // Active filter name, shown briefly after tapping the smiley button.
-    if (now < filterLabelUntil_) {
-        std::string name = filterName(filter_);
-        int scale = std::max(2, viewH_ / 200);
-        int tw = 8 * (int)name.size() * scale;
-        int pad = 8 * scale / 2;
-        int y = viewH_ / 6;
-        roundedBoxRGBA(ren_, viewW_ / 2 - tw / 2 - pad, y,
-                       viewW_ / 2 + tw / 2 + pad, y + 8 * scale + pad,
-                       6, 0, 0, 0, 120);
-        drawText(viewW_ / 2, y + pad / 2, name, scale, {255, 255, 255, 240}, true);
-    }
+    // Filter or camera name, shown briefly after tapping the button that
+    // changed it.
+    if (now < toastUntil_) drawToast(toast_, viewH_ / 6, std::max(2, viewH_ / 200));
 
     // Shutter flash: a quick white wash that fades out after a capture.
     if (flashStart_) {
@@ -1076,8 +1164,7 @@ void App::renderGallery() {
 
     Uint8 a = menu_.awake() ? menu_.alpha() : (Uint8)0;
     if (a > 0) {
-        bool hasVideo = gallery_->currentIsVideo();
-        auto btns = menu_.layout(Mode::Gallery, viewW_, viewH_, hasVideo);
+        auto btns = buttonsFor(Mode::Gallery);
         for (const auto& b : btns) Menu::drawButton(ren_, b, a);
     }
 
@@ -1122,7 +1209,7 @@ int App::run() {
                 if (!galleryMat_.empty()) renderMat(galleryMat_);
                 else clear();
                 boxRGBA(ren_, 0, 0, viewW_, viewH_, 0, 0, 0, 120);
-                auto btns = menu_.layout(Mode::ConfirmDelete, viewW_, viewH_, false);
+                auto btns = buttonsFor(Mode::ConfirmDelete);
                 for (const auto& b : btns) Menu::drawButton(ren_, b, 255);
                 present();
                 break;

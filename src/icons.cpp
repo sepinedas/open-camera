@@ -137,6 +137,61 @@ void iconCamera(SDL_Renderer* r, int cx, int cy, int rad, Uint8 a) {
                      std::max(2, (int)(rad * 0.08)), c, c, c, a);
 }
 
+// A thick arc, built from concentric one-pixel arcs the way ring() builds a
+// thick circle. Angles are SDL2_gfx's: degrees clockwise from 3 o'clock, so
+// the point at angle t is (cx + R cos t, cy + R sin t) with y down the screen.
+void thickArc(SDL_Renderer* r, int cx, int cy, int rad, int thick,
+              int a0, int a1, Uint8 c, Uint8 a) {
+    for (int i = 0; i < thick; ++i)
+        arcRGBA(r, cx, cy, rad - i, a0, a1, c, c, c, a);
+}
+
+// The same arc with an arrow head on its `a1` end, pointing the way the sweep
+// runs (clockwise, towards larger angles).
+void arcArrow(SDL_Renderer* r, int cx, int cy, int rad, int thick,
+              int a0, int a1, Uint8 c, Uint8 a) {
+    thickArc(r, cx, cy, rad, thick, a0, a1, c, a);
+
+    const double t = a1 * 3.14159265358979 / 180.0;
+    const double ct = std::cos(t), st = std::sin(t);
+    // Anchor the head on the middle of the stroke so it grows out of the arc
+    // instead of sitting alongside it; (-sin, cos) is the clockwise tangent
+    // and (cos, sin) the outward radial.
+    const double mid = rad - thick / 2.0;
+    const double px = cx + mid * ct, py = cy + mid * st;
+    // Head size follows the icon, not the stroke: tied to the stroke it grows
+    // out of proportion on the small discs a narrow panel lays out.
+    const double len = std::max(3.0, rad * 0.30), half = std::max(2.0, rad * 0.20);
+    filledTrigonRGBA(r, (Sint16)std::lround(px - st * len),
+                        (Sint16)std::lround(py + ct * len),
+                        (Sint16)std::lround(px + ct * half),
+                        (Sint16)std::lround(py + st * half),
+                        (Sint16)std::lround(px - ct * half),
+                        (Sint16)std::lround(py - st * half), c, c, c, a);
+}
+
+// A camera with two arrows circling it: "switch to the next camera". Both
+// arrows sweep the same way, which reads as rotating through the cameras
+// rather than as a refresh.
+void iconSwitchCamera(SDL_Renderer* r, int cx, int cy, int rad, Uint8 a) {
+    Uint8 c = mod(kFg, a);
+    // Stacked one-pixel arcs leave a dotted edge if the stack is thin, so keep
+    // the stroke at least three arcs deep, like the rings on the other icons.
+    int thick = std::max(3, (int)(rad * 0.17));
+    int R = (int)(rad * 0.95);
+    arcArrow(r, cx, cy, R, thick, 210, 330, c, a); // over the top, heading right
+    arcArrow(r, cx, cy, R, thick, 30, 150, c, a);  // under it, heading left
+
+    // Camera body, sized to sit inside the arrows: solid, so it still reads at
+    // button size, with the lens punched back out of it.
+    int w = (int)(rad * 0.38), h = (int)(rad * 0.25);
+    int top = cy - h;
+    boxRGBA(r, cx - (int)(w * 0.60), top - std::max(2, (int)(rad * 0.12)),
+            cx - (int)(w * 0.15), top + 1, c, c, c, a);
+    roundedBoxRGBA(r, cx - w, top, cx + w, cy + h, 3, c, c, c, a);
+    filledCircleRGBA(r, cx, cy, std::max(2, (int)(rad * 0.15)), 18, 18, 24, a);
+}
+
 // Crescent moon: "sleep / blank the screen". Built by scanning the outer disc
 // and subtracting an offset disc, so it needs no knowledge of the background.
 void iconMoon(SDL_Renderer* r, int cx, int cy, int rad, Uint8 a) {
@@ -212,6 +267,7 @@ void drawIcon(SDL_Renderer* ren, Action action, int cx, int cy, int r,
         case Action::StartCamera: iconCamera(ren, cx, cy, r, alpha); break;
         case Action::Sleep:       iconMoon(ren, cx, cy, r, alpha); break;
         case Action::Home:        iconHouse(ren, cx, cy, r, alpha); break;
+        case Action::SwitchCamera: iconSwitchCamera(ren, cx, cy, r, alpha); break;
         default: break;
     }
 }

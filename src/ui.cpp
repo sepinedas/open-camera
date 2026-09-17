@@ -49,7 +49,8 @@ Uint8 Menu::alpha() const {
     return 0;
 }
 
-std::vector<Button> Menu::layout(Mode mode, int sw, int sh, bool hasVideo) const {
+std::vector<Button> Menu::layout(Mode mode, int sw, int sh, bool hasVideo,
+                                 bool canSwitchCamera) const {
     switch (mode) {
         case Mode::Welcome: {
             // Two big labelled buttons low on the screen: Start / Sleep. Sized
@@ -60,12 +61,17 @@ std::vector<Button> Menu::layout(Mode mode, int sw, int sh, bool hasVideo) const
             return {{Action::StartCamera, sw / 2 - dx, y, r},
                     {Action::Sleep, sw / 2 + dx, y, r}};
         }
-        case Mode::Camera:
+        case Mode::Camera: {
             // Zoom is pinch-to-zoom (two fingers), so the row is
-            // home / filter / gallery / shutter.
-            return row({Action::Home, Action::CycleFilter,
-                        Action::OpenGallery, Action::Shutter},
-                       sw, sh);
+            // home / filter / (switch camera) / gallery / shutter. The switch
+            // button only appears with a second camera attached, so the usual
+            // single-camera build keeps its four large buttons.
+            std::vector<Action> a = {Action::Home, Action::CycleFilter};
+            if (canSwitchCamera) a.push_back(Action::SwitchCamera);
+            a.push_back(Action::OpenGallery);
+            a.push_back(Action::Shutter);
+            return row(a, sw, sh);
+        }
         case Mode::Gallery: {
             std::vector<Action> a = {Action::Back, Action::Prev};
             if (hasVideo) a.push_back(Action::Play);
