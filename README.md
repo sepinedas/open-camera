@@ -349,6 +349,32 @@ you then capture.
     the white belly faces the floor and shows as a hairline at the silhouette.
     Shaded honestly the shark comes out uniformly grey.
 
+**Paying for a head-sized model.** The shark first ran at 61 ms a frame where
+the other 3D filters ran at 8–12, which is a different thing entirely on a Pi.
+Profiling put 48 of those 61 ms in the rasteriser, and four changes took it to
+23 — the first three bit-for-bit identical in output, verified by diffing
+renders:
+
+| | |
+|---|---|
+| `std::pow` per supersample for the specular | exponent is a small constant per mesh, so exponentiate by squaring — **12 ms** |
+| lofts emitted back-to-front, the worst order for a z-buffer | sort the shark's shells near-first, so hidden pixels lose the depth test before they are shaded rather than after — **7 ms** |
+| three float buffers reallocated every frame | keep and reuse them; at 2x supersampling they are tens of megabytes — **4 ms** |
+| supersampling costs its square, over the whole region the model covers | spend a fixed sample budget (`kMaxSamples`) instead of a fixed factor — **16 ms** |
+
+The last one is the only one that changes the picture. Rather than choosing
+between 1x and 2x — which puts a hump in the cost curve just under the
+threshold and makes edges visibly pop as someone leans in — the factor eases
+down continuously once the model outgrows the budget, so a frame costs about
+the same whatever is on screen. At the budget set here the ears, muzzles and
+grinch are at the full factor for any normal framing and render identically to
+before; only the shark reaches it.
+
+`dirtyRegion()` also asks `face3d::bounds()` for the model's exact projected
+extent now, rather than padding the face box by margins measured from a sweep
+of poses. That was sizing every frame's colour conversion for the worst case
+— and left any pose outside the sweep free to be clipped.
+
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
 

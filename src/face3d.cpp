@@ -18,6 +18,20 @@ constexpr float kPi = 3.14159265358979f;
 // Supersampling for the silhouette. Ears and a nose cover far less of the
 // frame than a whole face, so 2x2 is affordable and the edges need it.
 constexpr int kSS = 2;
+// Cap on supersampled pixels per frame.
+//
+// Supersampling costs its square, and it is paid over the whole region the
+// model touches -- affordable for a pair of ears, ruinous for a shark's head,
+// which covers ten times the area at the same distance. Rather than a fixed
+// factor, spend the budget: a model small enough to fit inside it is drawn at
+// the full kSS, and a larger one has its factor eased down so the frame costs
+// the same whatever is on screen.
+//
+// Continuous rather than a choice between 1x and 2x, because a threshold puts
+// a hump in the cost curve just under it and makes the edges visibly pop as
+// someone leans toward the camera. At 420k, everything but the shark is at
+// the full factor for any normal framing.
+constexpr int kMaxSamples = 420000;
 
 // --- Per-species geometry, in eye-separation units in the head frame -------
 // +x toward the image-right eye, +y toward the chin, +z away from the camera,
@@ -57,7 +71,8 @@ struct Style {
     float noseYOff;  // slide the dome up the bridge, away from the lip
     // Dome shading. Wet leather is dark and glossy; skin is neither, and
     // lighting a skin-coloured nose like leather turns it into a dark blob.
-    float noseAmbient, noseSpec, noseShin;
+    float noseAmbient, noseSpec;
+    int noseShin;
     // Nostrils, carved into whichever surface the muzzle ends in -- the dome
     // for a dog or a grinch, the snout's end disc for a pig. Carved, not
     // pasted: a disc placed in front of the muzzle reads as a sticker, and
@@ -91,7 +106,7 @@ Style styleFor(Species sp) {
         s.snout = false;
         s.noseR = 0.24f;
         s.noseWide = 1.20f; s.noseTall = 0.88f; s.noseYOff = 0.f;
-        s.noseAmbient = 0.30f; s.noseSpec = 0.55f; s.noseShin = 34.f;
+        s.noseAmbient = 0.30f; s.noseSpec = 0.55f; s.noseShin = 34;
         s.nostrilX = 0.46f; s.nostrilY = 0.30f;
         s.nostrilRx = 0.30f; s.nostrilRy = 0.42f;
         s.nostrilDepth = 0.30f;
@@ -126,7 +141,7 @@ Style styleFor(Species sp) {
         // squat leather pad a dog wears. Lit as skin, so it stays part of the
         // face rather than sitting on it as a dark bead.
         s.noseWide = 0.95f; s.noseTall = 1.30f; s.noseYOff = -0.06f;
-        s.noseAmbient = 0.70f; s.noseSpec = 0.12f; s.noseShin = 16.f;
+        s.noseAmbient = 0.70f; s.noseSpec = 0.12f; s.noseShin = 16;
         s.noseCol = Vec3f(128, 218, 150);
     } else { // Pig
         // Ears stand up off the crown and lean outward: the tip's y is
@@ -193,7 +208,7 @@ struct Mesh {
     bool doubleSided = false;
     float ambient = 0.35f;
     float spec = 0.2f;
-    float shin = 14.f;
+    int shin = 14; // specular exponent; integer, for fastPow
 
     int add(const Vec3f& p, const Vec3f& c) {
         pos.push_back(p);
@@ -230,6 +245,24 @@ struct Mesh {
             const Vec3f out = (a + pos[t[1]] + pos[t[2]]) * (1.f / 3.f) - c;
             if (fn.dot(out) < 0.f) std::swap(t[1], t[2]);
         }
+    }
+
+    // Draw near geometry first, so the depth test can reject what is behind
+    // it before any of it is shaded.
+    //
+    // The lofts are built back-to-front -- station 0 is the back of the head
+    // -- which is the worst possible order for a z-buffer: every hidden pixel
+    // gets lit, written, and then painted over by the near geometry that
+    // follows. The depth test already rejects before shading; it just never
+    // got the chance. This reorders the triangle list and nothing else, so
+    // the image is unchanged and only the work to reach it differs.
+    void sortNearFirst() {
+        std::sort(tri.begin(), tri.end(),
+                  [&](const cv::Vec3i& a, const cv::Vec3i& b) {
+                      const float za = pos[a[0]][2] + pos[a[1]][2] + pos[a[2]][2];
+                      const float zb = pos[b[0]][2] + pos[b[1]][2] + pos[b[2]][2];
+                      return za < zb; // -z is toward the camera
+                  });
     }
 
     // Smooth vertex normals by accumulating adjacent face normals.
@@ -273,7 +306,7 @@ Mesh buildEar(float side, float wiggle, const Head& h, const Style& st) {
     m.doubleSided = true; // a closed shell, but never rely on winding
     m.ambient = 0.38f;
     m.spec = 0.12f;
-    m.shin = 12.f;
+    m.shin = 12;
 
     // An ear is a lobe swept along an axis from where it joins the head to its
     // tip, widening out of the attachment and closing again at the far end.
@@ -487,7 +520,7 @@ Mesh buildSnout(const Head& h, const Style& st) {
     m.doubleSided = true;
     m.ambient = 0.42f;
     m.spec = 0.17f; // skin, not lacquer
-    m.shin = 18.f;
+    m.shin = 18;
     const SnoutFrame sf = snoutFrame(h, st);
     const int nSeg = 34, nTube = 5, nPad = 8;
 
@@ -681,7 +714,7 @@ Vec3f sharkSkin(float v, float s, float ax) {
 // closes itself. Behind the hinge the return bulges out into the other half of
 // the ellipse instead of running flat, which is what makes the head solid
 // there rather than two shells with a slot between them.
-Mesh buildSharkHalf(const Head& h, const SharkProfile& p, bool upper) {
+Mesh buildSharkHalf(const SharkProfile& p, bool upper) {
     Mesh m;
     m.doubleSided = true; // the open mouth shows both sides of the palate
     // Lit softly and barely glossy. At the ambient the smaller parts use, a
@@ -690,7 +723,7 @@ Mesh buildSharkHalf(const Head& h, const SharkProfile& p, bool upper) {
     // is given -- which is what made the white jaw look as grey as the back.
     m.ambient = 0.62f;
     m.spec = 0.16f;
-    m.shin = 14.f;
+    m.shin = 14;
 
     const Vec3f mouthCol(96, 104, 152); // BGR: the raw pink inside the mouth
     const int nArc = 19, nRet = 13, nS = 30;
@@ -749,17 +782,18 @@ Mesh buildSharkHalf(const Head& h, const SharkProfile& p, bool upper) {
             m.face(c0, ring[0][(k + 1) % nRing], ring[0][k]);
     }
     m.computeNormals();
+    m.sortNearFirst(); // the only mesh here that occludes much of itself
     return m;
 }
 
 // A row of teeth along one jaw's mouth line: little three-sided spikes
 // standing on the outer edge of the gape, pointing into the mouth.
-Mesh buildSharkTeeth(const Head& h, const SharkProfile& p, bool upper) {
+Mesh buildSharkTeeth(const SharkProfile& p, bool upper) {
     Mesh m;
     m.doubleSided = true; // far too small to be worth getting winding right
     m.ambient = 0.62f;
     m.spec = 0.30f;
-    m.shin = 26.f;
+    m.shin = 26;
     const Vec3f enamel(238, 243, 246);
     const Vec3f root(196, 206, 214);
     const float dir = upper ? 1.f : -1.f; // teeth point across the gape
@@ -797,12 +831,12 @@ Mesh buildSharkTeeth(const Head& h, const SharkProfile& p, bool upper) {
 
 // The eyes: small black beads set into the flank, and the dorsal fin, which is
 // the other half of what makes the silhouette read as a shark at a glance.
-Mesh buildSharkTrim(const Head& h, const SharkProfile& p) {
+Mesh buildSharkTrim(const SharkProfile& p) {
     Mesh m;
     m.doubleSided = true;
     m.ambient = 0.30f;
     m.spec = 0.55f;
-    m.shin = 40.f;
+    m.shin = 40;
 
     const float sEye = 0.34f;
     const SharkSection ce = sharkSection(sEye, p);
@@ -887,6 +921,22 @@ Proj project(const Head& h, const Vec3f& world, float ssScale, cv::Point2f ssOrg
 }
 
 // Light rig (camera space): key light from the upper-left front.
+// x to a small non-negative integer power, by squaring.
+//
+// The specular term evaluates this once per supersample, which for a model
+// the size of the shark's head is millions of times a frame, and std::pow is
+// a general transcendental that cannot know the exponent is a constant 14 or
+// 26. Worth 12 ms a frame on its own, for identical output.
+inline float fastPow(float x, int n) {
+    float r = 1.f;
+    while (n) {
+        if (n & 1) r *= x;
+        x *= x;
+        n >>= 1;
+    }
+    return r;
+}
+
 const Vec3f kLight = norm(Vec3f(-0.4f, -0.55f, -0.8f));
 const Vec3f kHalf = norm(kLight + Vec3f(0.f, 0.f, -1.f)); // view = -Z
 
@@ -956,7 +1006,7 @@ void raster(const Mesh& m, const Head& h, float ssScale, cv::Point2f ssOrg,
 
                 float diff = std::max(0.f, n.dot(kLight));
                 float shade = m.ambient + (1.f - m.ambient) * diff;
-                float s = m.spec * std::pow(std::max(0.f, n.dot(kHalf)), m.shin);
+                float s = m.spec * fastPow(std::max(0.f, n.dot(kHalf)), m.shin);
                 Vec3f c = base * shade + Vec3f(255, 255, 255) * s;
 
                 zb[x] = depth;
@@ -970,9 +1020,7 @@ void raster(const Mesh& m, const Head& h, float ssScale, cv::Point2f ssOrg,
 
 } // namespace
 
-void render(cv::Mat& frame, const Head& head, Species species) {
-    if (frame.empty() || frame.type() != CV_8UC3) return;
-    if (head.unit < 12.f) return; // too small to render cleanly
+std::vector<Mesh> buildMeshes(const Head& head, Species species) {
 
     std::vector<Mesh> meshes;
     if (species == Species::Shark) {
@@ -986,17 +1034,17 @@ void render(cv::Mat& frame, const Head& head, Species species) {
         // what is in front of the hinge downward -- the jaw dropping open.
         const Matx33f Rj = rotAxis(Vec3f(1.f, 0.f, 0.f), ang);
 
-        meshes.push_back(buildSharkHalf(head, sp, true));
-        meshes.push_back(buildSharkTeeth(head, sp, true));
-        Mesh jaw = buildSharkHalf(head, sp, false);
-        Mesh lowTeeth = buildSharkTeeth(head, sp, false);
+        meshes.push_back(buildSharkHalf(sp, true));
+        meshes.push_back(buildSharkTeeth(sp, true));
+        Mesh jaw = buildSharkHalf(sp, false);
+        Mesh lowTeeth = buildSharkTeeth(sp, false);
         for (Mesh* j : {&jaw, &lowTeeth}) {
             for (auto& q : j->pos) q = rotAbout(Rj, q, pivot);
             j->computeNormals();
         }
         meshes.push_back(std::move(jaw));
         meshes.push_back(std::move(lowTeeth));
-        meshes.push_back(buildSharkTrim(head, sp));
+        meshes.push_back(buildSharkTrim(sp));
     } else {
         const Style st = styleFor(species);
         const float wig = 0.05f * std::sin((float)head.phase * 0.11f);
@@ -1009,7 +1057,12 @@ void render(cv::Mat& frame, const Head& head, Species species) {
         }
     }
 
-    // Image-space bounding box of every projected vertex -> the region touched.
+    return meshes;
+}
+
+// Image-space bounding box of every projected vertex -> the region touched.
+cv::Rect meshBounds(const std::vector<Mesh>& meshes, const Head& head,
+                    int w, int h) {
     float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
     for (const Mesh& m : meshes)
         for (const Vec3f& p : m.pos) {
@@ -1020,20 +1073,53 @@ void render(cv::Mat& frame, const Head& head, Species species) {
         }
     cv::Rect roi((int)std::floor(minx) - 2, (int)std::floor(miny) - 2,
                  (int)std::ceil(maxx - minx) + 4, (int)std::ceil(maxy - miny) + 4);
-    roi &= cv::Rect(0, 0, frame.cols, frame.rows);
+    return roi & cv::Rect(0, 0, w, h);
+}
+
+cv::Rect bounds(const Head& head, Species species) {
+    if (head.unit < 12.f) return cv::Rect();
+    // A frame-sized clip, because the caller intersects with the frame itself.
+    const int big = 1 << 20;
+    return meshBounds(buildMeshes(head, species), head, big, big);
+}
+
+void render(cv::Mat& frame, const Head& head, Species species) {
+    if (frame.empty() || frame.type() != CV_8UC3) return;
+    if (head.unit < 12.f) return; // too small to render cleanly
+
+    const std::vector<Mesh> meshes = buildMeshes(head, species);
+    const cv::Rect roi = meshBounds(meshes, head, frame.cols, frame.rows);
     if (roi.width < 2 || roi.height < 2) return;
 
     const cv::Point2f org((float)roi.x, (float)roi.y);
-    const int LW = roi.width * kSS, LH = roi.height * kSS;
-    cv::Mat layer(LH, LW, CV_32FC3, cv::Scalar(0, 0, 0));
-    cv::Mat cover(LH, LW, CV_32F, cv::Scalar(0));
-    cv::Mat zbuf(LH, LW, CV_32F, cv::Scalar(1e9f));
+    const float ss = clampf(std::sqrt((float)kMaxSamples /
+                                      (float)std::max(1, roi.width * roi.height)),
+                            1.f, (float)kSS);
+    const int LW = (int)std::lround(roi.width * ss);
+    const int LH = (int)std::lround(roi.height * ss);
+    // Kept between frames rather than reallocated: at kSS = 2 these are tens
+    // of megabytes, and churning that every frame costs more in allocation
+    // and page faults than the drawing does. Reused only when the size still
+    // fits, and always cleared. render() is called from the one preview path,
+    // so these are not shared across threads.
+    static cv::Mat layer, cover, zbuf;
+    if (layer.rows < LH || layer.cols < LW) {
+        layer.create(LH, LW, CV_32FC3);
+        cover.create(LH, LW, CV_32F);
+        zbuf.create(LH, LW, CV_32F);
+    }
+    cv::Mat lay = layer(cv::Rect(0, 0, LW, LH));
+    cv::Mat cov = cover(cv::Rect(0, 0, LW, LH));
+    cv::Mat zbf = zbuf(cv::Rect(0, 0, LW, LH));
+    lay.setTo(cv::Scalar(0, 0, 0));
+    cov.setTo(cv::Scalar(0));
+    zbf.setTo(cv::Scalar(1e9f));
     for (const Mesh& m : meshes)
-        raster(m, head, (float)kSS, org, layer, cover, zbuf);
+        raster(m, head, ss, org, lay, cov, zbf);
 
     cv::Mat colDown, covDown;
-    cv::resize(layer, colDown, cv::Size(roi.width, roi.height), 0, 0, cv::INTER_AREA);
-    cv::resize(cover, covDown, cv::Size(roi.width, roi.height), 0, 0, cv::INTER_AREA);
+    cv::resize(lay, colDown, cv::Size(roi.width, roi.height), 0, 0, cv::INTER_AREA);
+    cv::resize(cov, covDown, cv::Size(roi.width, roi.height), 0, 0, cv::INTER_AREA);
 
     cv::Mat dst = frame(roi);
     for (int y = 0; y < roi.height; ++y) {

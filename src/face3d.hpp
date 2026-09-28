@@ -66,4 +66,11 @@ struct Head {
 // too small to render cleanly.
 void render(cv::Mat& frame, const Head& head, Species species);
 
+// The frame-space rectangle render() will touch for this head, exactly -- the
+// projected bounding box of the model, not an estimate. Callers that have to
+// prepare a region before drawing into it (the NV12 preview path converts and
+// re-encodes only what changes) use this instead of padding the face box by a
+// worst case. Empty when the head is too small to draw.
+cv::Rect bounds(const Head& head, Species species);
+
 } // namespace olc::face3d

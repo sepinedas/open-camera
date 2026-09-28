@@ -572,6 +572,17 @@ std::unique_ptr<MpFaceLandmarker> createLandmarker(const std::string& path,
     return std::move(*created);
 }
 
+// Which 3D model a filter hangs over the face, if any.
+bool speciesFor(Filter f, face3d::Species& out) {
+    switch (f) {
+        case Filter::DogFace: out = face3d::Species::Dog; return true;
+        case Filter::PigFace: out = face3d::Species::Pig; return true;
+        case Filter::Grinch:  out = face3d::Species::Grinch; return true;
+        case Filter::Shark:   out = face3d::Species::Shark; return true;
+        default: return false;
+    }
+}
+
 } // namespace
 
 // The MediaPipe landmarker, kept out of filters.hpp so nothing else has to see
@@ -781,57 +792,52 @@ void FaceFilter::updateDetection(const cv::Mat& src, cv::Size frameSize) {
 cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
     if (filter == Filter::None || w <= 0 || h <= 0) return cv::Rect();
 
-    // Union the per-face bounding boxes, each grown to cover the warp's
-    // Gaussian falloff (~half a face width) and the tears that fall down the
-    // cheeks below the eyes. One face -> a tight box; several -> a larger box,
-    // still far cheaper than converting the whole frame.
-    //
+    // Union of what each face's filter will actually touch. One face -> a
+    // tight box; several -> a larger one, still far cheaper than converting
+    // the whole frame. How far a filter reaches past the face box depends
+    // entirely on which filter it is, so the three kinds are handled apart.
+    auto grow = [](cv::Rect b, int x, int top, int bot) {
+        return cv::Rect(b.x - x, b.y - top, b.width + 2 * x,
+                        b.height + top + bot);
+    };
     cv::Rect uni;
     for (const Face& face : faces_) {
         const cv::Rect& f = face.box;
-        // Three margins, because the filters reach different distances.
-        //
-        //  * the wireframe sits on the landmarks themselves: a couple of
-        //    pixels for the dot radius and line width is enough;
-        //  * the animal filters paint the mesh but *also* hang 3D ears and a
-        //    muzzle well outside the face box. Measured against the canonical
-        //    head: the grinch's ears reach 27% of a face-width past each side,
-        //    and the pig's stand 30% of a face-height above the crown -- so the
-        //    margins below are the worst case plus slack for head rotation.
-        //    Too small a margin here does not merely waste the saving, it
-        //    slices the ears off against the edge of the re-encoded region --
-        //    which is what a 3 px margin, left over from when these filters
-        //    only painted the mesh, was doing;
-        //  * the warps need room for their Gaussian falloff and the tears.
-        //  * the shark is not an overlay at all but a head in place of the
-        //    one that is there, bigger than it on every side and with a jaw
-        //    that swings well below the chin. Swept over jaw, yaw and pitch
-        //    it reaches 48% of a face-width past a side, 38% above the crown
-        //    and 79% below it -- so the region here is several times the face
-        //    box. There is no saving to be had: the model really is that big,
-        //    and clipping it would be far worse than re-encoding the area.
-        const bool wireOnly = (filter == Filter::FaceMesh);
-        const bool shark = (filter == Filter::Shark);
-        const bool animal = (filter == Filter::DogFace ||
-                             filter == Filter::PigFace ||
-                             filter == Filter::Grinch);
-        int mx, mtop, mbot;
-        if (wireOnly) {
-            mx = mtop = mbot = 3;
-        } else if (shark) {
-            mx = std::max(12, f.width * 55 / 100);
-            mtop = std::max(12, f.height * 42 / 100);
-            mbot = std::max(12, f.height * 85 / 100);
-        } else if (animal) {
-            mx = std::max(10, f.width * 2 / 5);
-            mtop = std::max(10, f.height * 2 / 5);
-            mbot = std::max(8, f.height / 6);
+        cv::Rect r;
+        face3d::Species sp;
+        if (filter == Filter::FaceMesh) {
+            // The wireframe sits on the landmarks themselves: a couple of
+            // pixels for the dot radius and the line width is enough.
+            r = grow(f, 3, 3, 3);
+        } else if (speciesFor(filter, sp)) {
+            // Ask the model where it is going to be.
+            //
+            // These filters hang 3D geometry well outside the face box -- the
+            // shark replaces the whole head and drops its jaw below the chin
+            // -- and this used to be covered by padding the box with margins
+            // measured from a sweep of jaw, yaw and pitch. That makes every
+            // ordinary frame re-encode a region sized for the worst one, and
+            // leaves a pose outside the sweep free to get clipped. The
+            // renderer already knows the exact projected extent, so use it.
+            face3d::Head h;
+            cv::Rect parts;
+            if (headFromFace(face, cv::Point2f(0.f, 0.f), 0.0, h))
+                parts = face3d::bounds(h, sp);
+            if (parts.area() > 0)
+                parts = grow(parts, 6, 6, 6); // slack for the idle ear wiggle
+            // The animals paint the face mesh as well as hanging parts off
+            // it; the shark paints nothing, because it covers the face.
+            r = (filter == Filter::Shark) ? parts
+                                          : (parts.area() == 0 ? grow(f, 4, 4, 4)
+                                                               : (grow(f, 4, 4, 4) | parts));
         } else {
-            mx = std::max(8, f.width * 2 / 5);
-            mtop = std::max(6, f.height * 3 / 10);
-            mbot = std::max(8, f.height / 2);
+            // The warps need room for their Gaussian falloff and the tears.
+            const int mx = std::max(8, f.width * 2 / 5);
+            const int mtop = std::max(6, f.height * 3 / 10);
+            const int mbot = std::max(8, f.height / 2);
+            r = grow(f, mx, mtop, mbot);
         }
-        cv::Rect r(f.x - mx, f.y - mtop, f.width + 2 * mx, f.height + mtop + mbot);
+        if (r.area() == 0) continue;
         uni = (uni.area() == 0) ? r : (uni | r);
     }
     uni &= cv::Rect(0, 0, w, h);
