@@ -21,7 +21,16 @@ namespace olc::face3d {
 // off the face mesh, the perspective-free projection, the z-buffer, the
 // shading -- is identical, so they differ only by a table of geometry and
 // colours (see Style in the .cpp).
-enum class Species { Dog, Pig, Grinch };
+enum class Species {
+    Dog,
+    Pig,
+    Grinch,
+    // The odd one out: not ears and a muzzle added over a painted face, but a
+    // whole head in place of it -- skull, hinged jaw, teeth and all. It needs
+    // nothing painted underneath, so the filter that draws it skips the mesh
+    // paint entirely and calls render() on its own.
+    Shark,
+};
 
 // The head's frame, measured from the face mesh, in image space.
 struct Head {
@@ -40,6 +49,15 @@ struct Head {
     float crownY = -0.90f;   // top of the head, above the eye line
     float noseY = 0.65f;     // nose tip, below the eye line
     float noseZ = -0.35f;    // how far the nose tip stands out of the face
+    float chinY = 1.35f;     // bottom of the chin. Only the shark needs it,
+                             // which is sized to the whole head rather than
+                             // hung off one feature of it.
+
+    // Expression, straight from the mesh's blendshapes. A model that replaces
+    // the head has to move with the face or it is a mask sitting on top of
+    // one: the shark's jaw is driven by `open`.
+    float open = 0.f;   // 0..1, how far the jaw is open
+    float smile = 0.f;  // 0..1, how much the mouth already grins
 
     double phase = 0.0; // free-running frame counter; drives the ear wiggle
 };

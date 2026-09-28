@@ -547,6 +547,333 @@ Mesh buildSnout(const Head& h, const Style& st) {
 }
 
 
+// --- Shark -----------------------------------------------------------------
+// Not a set of parts hung over a painted face: a whole head, built to the
+// measured size of the real one and lofted along its own axis. Everything is
+// derived from the head's own dimensions -- crown, chin, temples, nose -- so
+// it fits the face it is worn by rather than an assumed one.
+//
+// The head is two lofts sharing one profile: the skull and a jaw that hinges
+// against it. Where they meet is the mouth line, and because the loft's
+// cross-section is an ellipse centred on that line, the line needs no separate
+// definition -- it is simply y = cy(s), the centre of each cross-section.
+struct SharkProfile {
+    // The head's longitudinal axis runs from s = 0 at the back of the skull to
+    // s = 1 at the point of the snout.
+    //
+    // The silhouette is given as three curves rather than one axis plus a
+    // radius, because head-on the outline is what has to be got right and an
+    // axis-plus-radius body cannot produce it: whatever tapers forward hides
+    // inside the largest cross-section, which is the one that has to cover
+    // the whole head. So the snout is driven *past* the chin instead, where
+    // it is actually seen.
+    float crown, chin;     // the real head, which everything is sized to
+    float topBack;         // top of the skull, a little clear of the crown
+    float cyBack, cyTip;   // the mouth line, at the corners and at the point
+    float botBack;         // bottom of the jaw, at the back
+    float rxMax;
+    float sHinge;          // where the jaw parts company with the skull
+    float zBack, zTip;
+};
+
+SharkProfile sharkProfile(const Head& h) {
+    SharkProfile p;
+    p.crown = h.crownY;
+    p.chin = h.chinY;
+    const float len = h.chinY - h.crownY;
+    // Corners of the gape a little below the eye line, near a real mouth's;
+    // the point of the snout well below the chin, so the wedge of it clears
+    // the head's own outline and can be seen.
+    p.cyBack = h.crownY + 0.56f * len;
+    p.cyTip = h.chinY + 0.34f * len;
+    p.botBack = h.chinY + 0.12f * len;
+    p.rxMax = h.headHalfW * 1.40f;
+    // Clearance over the crown, so the top of a real head stays inside the
+    // shell rather than poking through the back of it.
+    p.topBack = h.crownY - 0.17f * len;
+    p.sHinge = 0.19f;
+    p.zBack = 1.20f;
+    p.zTip = h.noseZ - 1.15f;
+    return p;
+}
+
+// Girth along the head: held near full through the braincase, which has a
+// whole head to cover, then drawn away hard into the point of the snout.
+float sharkGirth(float s) {
+    const float t = clampf(s, 0.f, 1.f);
+    const float taper = std::pow(std::max(0.f, 1.f - std::pow(t, 1.75f)), 0.60f);
+    return taper * (1.f + 0.08f * std::sin(kPi * std::pow(t, 0.8f)));
+}
+
+// How far the jaw has parted from the skull at station s: 0 behind the hinge,
+// where the two are one closed head, 1 in front of it, where the skull's
+// cross-section is the upper half and the jaw's the lower. Blended over a
+// short run so neither develops a crease at the hinge.
+float sharkGape(float s, const SharkProfile& p) {
+    return clampf((s - p.sHinge) / 0.11f, 0.f, 1.f);
+}
+
+struct SharkSection {
+    float z, cy, rx, ryUp, ryLo, gape;
+};
+
+SharkSection sharkSection(float s, const SharkProfile& p) {
+    SharkSection c;
+    const float t = clampf(s, 0.f, 1.f);
+    c.z = p.zBack + (p.zTip - p.zBack) * t;
+    // Top of the skull: holds the crown over the braincase, then dives along
+    // the rostrum to meet the mouth line at the point.
+    const float yTop = p.topBack + (p.cyTip - p.topBack) * std::pow(t, 1.75f);
+    c.cy = p.cyBack + (p.cyTip - p.cyBack) * std::pow(t, 1.45f);
+    const float yBot = p.botBack + (p.cyTip - p.botBack) * std::pow(t, 1.15f);
+    c.ryUp = std::max(0.f, c.cy - yTop);
+    c.ryLo = std::max(0.f, yBot - c.cy);
+    c.rx = p.rxMax * sharkGirth(t);
+    c.gape = sharkGape(t, p);
+    return c;
+}
+
+// Countershading: dark along the back, abruptly white underneath, which is
+// the one marking that makes a grey shape read as a shark.
+// Where a point sits down the model: 0 at the top of the skull, 1 at the
+// point of the snout, which is its lowest part.
+float sharkDepth(float y, const SharkProfile& p) {
+    return clampf((y - p.topBack) / std::max(1e-3f, p.cyTip - p.topBack),
+                  0.f, 1.f);
+}
+
+// Countershading, keyed to height down the model rather than to position
+// round the cross-section.
+//
+// Round the section is the anatomically honest choice and it does not work
+// here: head-on, almost the entire visible surface is the dorsal third -- the
+// belly faces the floor and shows as a hairline at the silhouette, so the
+// white never appears at all. Keyed to height, the gradient runs dark at the
+// top of the picture to white at the bottom, which is what reads as a shark
+// from the front. The cost is that the top of the rostrum, being low, is pale
+// where a real shark's is grey; from the camera's position it is not visible
+// as an error.
+Vec3f sharkSkin(float v, float s, float ax) {
+    const Vec3f back(112, 108, 104);   // BGR: slate grey
+    const Vec3f flank(150, 148, 146);
+    const Vec3f belly(228, 231, 234);
+    const float t = clampf((v - 0.36f) * 7.0f, 0.f, 1.f);
+    Vec3f c = back * (1.f - t) + flank * t;
+    const float b = clampf((v - 0.53f) * 7.4f, 0.f, 1.f);
+    c = c * (1.f - b) + belly * b;
+    // Gill slits: five short dark bars on the flanks, behind the mouth corner
+    // and never on the belly, where a shark has none.
+    if (s > 0.05f && s < 0.24f && ax > 0.26f && v > 0.26f && v < 0.54f) {
+        const float ph = (s - 0.045f) / 0.032f;       // one bar per 0.032 of s
+        const float d = std::fabs(ph - std::floor(ph) - 0.5f) * 2.f;
+        const float slit = clampf((0.42f - d) * 5.f, 0.f, 1.f) *
+                           clampf((ax - 0.30f) * 3.f, 0.f, 1.f);
+        c = c * (1.f - slit * 0.85f) + Vec3f(52, 50, 54) * (slit * 0.85f);
+    }
+    return c;
+}
+
+// One half of the head: the skull if `upper`, the lower jaw otherwise.
+//
+// Each cross-section is a closed outline -- the outer arc, then a return along
+// the mouth line -- swept along the head's axis as a single uniform grid, so
+// one triangle pattern winds the whole thing and the interior of the mouth
+// closes itself. Behind the hinge the return bulges out into the other half of
+// the ellipse instead of running flat, which is what makes the head solid
+// there rather than two shells with a slot between them.
+Mesh buildSharkHalf(const Head& h, const SharkProfile& p, bool upper) {
+    Mesh m;
+    m.doubleSided = true; // the open mouth shows both sides of the palate
+    // Lit softly and barely glossy. At the ambient the smaller parts use, a
+    // body this size is mostly surface pointing away from the light, and the
+    // countershading disappears under the shading no matter what colours it
+    // is given -- which is what made the white jaw look as grey as the back.
+    m.ambient = 0.62f;
+    m.spec = 0.16f;
+    m.shin = 14.f;
+
+    const Vec3f mouthCol(96, 104, 152); // BGR: the raw pink inside the mouth
+    const int nArc = 19, nRet = 13, nS = 30;
+    const float dir = upper ? -1.f : 1.f; // which way the outer arc bulges
+
+    std::vector<std::vector<int>> ring(nS);
+    for (int si = 0; si < nS; ++si) {
+        // Bunched toward the snout, where the curvature is highest.
+        const float s = std::pow((float)si / (nS - 1), 0.85f);
+        const SharkSection c = sharkSection(s, p);
+        const float rOut = upper ? c.ryUp : c.ryLo;
+        // The return: the far half of the ellipse behind the hinge, flattening
+        // into the roof or floor of the mouth in front of it.
+        const float rRet = (upper ? c.ryLo : c.ryUp) * (1.f - c.gape);
+
+        for (int k = 0; k < nArc; ++k) {
+            const float th = kPi * (float)k / (nArc - 1); // +x round to -x
+            const float ca = std::cos(th), sa = std::sin(th);
+            const float yw = c.cy + dir * rOut * sa;
+            ring[si].push_back(m.add(Vec3f(c.rx * ca, yw, c.z),
+                                     sharkSkin(sharkDepth(yw, p), s,
+                                               std::fabs(ca))));
+        }
+        for (int k = 1; k < nRet; ++k) {
+            // Back along the other side, from -x to +x.
+            const float th = kPi * (1.f - (float)k / nRet);
+            const float ca = std::cos(th), sa = std::sin(th);
+            // In front of the hinge this is the flat roof (or floor) of the
+            // mouth, so it is coloured as flesh rather than as skin.
+            const float flesh = c.gape;
+            // Darker toward the back of the mouth, so the palate reads as a
+            // throat going somewhere rather than as a flat red card.
+            const Vec3f gullet = mouthCol * clampf(0.34f + 1.05f * s, 0.f, 1.f);
+            const float yw = c.cy - dir * rRet * sa;
+            const Vec3f skin = sharkSkin(sharkDepth(yw, p), s, std::fabs(ca));
+            ring[si].push_back(m.add(Vec3f(c.rx * ca, yw, c.z),
+                                     skin * (1.f - flesh) + gullet * flesh));
+        }
+    }
+
+    const int nRing = nArc + nRet - 1;
+    for (int si = 0; si + 1 < nS; ++si)
+        for (int k = 0; k < nRing; ++k) {
+            const int k2 = (k + 1) % nRing;
+            m.face(ring[si][k], ring[si][k2], ring[si + 1][k2]);
+            m.face(ring[si][k], ring[si + 1][k2], ring[si + 1][k]);
+        }
+    // Close the back of the head. The snout end needs no cap: the girth has
+    // already gone to zero there.
+    {
+        Vec3f mid(0.f, 0.f, 0.f);
+        for (int k = 0; k < nRing; ++k) mid += m.pos[ring[0][k]];
+        mid = mid * (1.f / (float)nRing);
+        const int c0 = m.add(mid, Vec3f(88, 86, 86));
+        for (int k = 0; k < nRing; ++k)
+            m.face(c0, ring[0][(k + 1) % nRing], ring[0][k]);
+    }
+    m.computeNormals();
+    return m;
+}
+
+// A row of teeth along one jaw's mouth line: little three-sided spikes
+// standing on the outer edge of the gape, pointing into the mouth.
+Mesh buildSharkTeeth(const Head& h, const SharkProfile& p, bool upper) {
+    Mesh m;
+    m.doubleSided = true; // far too small to be worth getting winding right
+    m.ambient = 0.62f;
+    m.spec = 0.30f;
+    m.shin = 26.f;
+    const Vec3f enamel(238, 243, 246);
+    const Vec3f root(196, 206, 214);
+    const float dir = upper ? 1.f : -1.f; // teeth point across the gape
+
+    const int nTooth = 11;
+    for (int i = 0; i < nTooth; ++i) {
+        // Spread from just inside the mouth corner to near the snout's point.
+        const float s = p.sHinge + 0.10f +
+                        (0.94f - p.sHinge - 0.10f) * (float)i / (nTooth - 1);
+        const SharkSection c = sharkSection(s, p);
+        const float step = 0.030f;
+        const SharkSection cA = sharkSection(std::max(0.f, s - step), p);
+        const SharkSection cB = sharkSection(std::min(1.f, s + step), p);
+        // Teeth shrink toward the point of the snout, as they do on a real jaw.
+        const float len = (upper ? 0.26f : 0.22f) * (p.chin - p.cyBack) *
+                          (0.55f + 0.45f * (1.f - s));
+        const float half = 0.40f;
+
+        for (float side : {-1.f, 1.f}) {
+            const Vec3f a(side * (cA.rx * (1.f - half) + c.rx * half), cA.cy, cA.z);
+            const Vec3f b(side * (cB.rx * (1.f - half) + c.rx * half), cB.cy, cB.z);
+            const Vec3f inner(side * c.rx * 0.62f, c.cy, c.z);
+            const Vec3f tipP(side * c.rx * 0.80f, c.cy + dir * len, c.z);
+            const int ia = m.add(a, root), ib = m.add(b, root);
+            const int ii = m.add(inner, root), it = m.add(tipP, enamel);
+            m.face(ia, ib, it);
+            m.face(ib, ii, it);
+            m.face(ii, ia, it);
+            m.face(ia, ii, ib);
+        }
+    }
+    m.computeNormals();
+    return m;
+}
+
+// The eyes: small black beads set into the flank, and the dorsal fin, which is
+// the other half of what makes the silhouette read as a shark at a glance.
+Mesh buildSharkTrim(const Head& h, const SharkProfile& p) {
+    Mesh m;
+    m.doubleSided = true;
+    m.ambient = 0.30f;
+    m.spec = 0.55f;
+    m.shin = 40.f;
+
+    const float sEye = 0.34f;
+    const SharkSection ce = sharkSection(sEye, p);
+    const float thEye = 0.52f; // round from the flank toward the top
+    for (float side : {-1.f, 1.f}) {
+        const Vec3f centre(side * ce.rx * std::cos(thEye) * 0.99f,
+                           ce.cy - ce.ryUp * std::sin(thEye) * 0.99f, ce.z);
+        // Outward normal of the ellipse there, so the bead sits proud of the
+        // surface however the head is proportioned.
+        const Vec3f nOut = norm(Vec3f(side * std::cos(thEye) / ce.rx,
+                                      -std::sin(thEye) / ce.ryUp, -0.25f));
+        Vec3f u = norm(nOut.cross(Vec3f(0.f, 1.f, 0.f)));
+        Vec3f v = norm(nOut.cross(u));
+        const float R = 0.140f * p.rxMax;
+        const int nSeg = 14, nRing = 6;
+        std::vector<std::vector<int>> ring(nRing);
+        for (int r = 0; r < nRing; ++r) {
+            const float lat = 0.5f * kPi * (float)r / (nRing - 1);
+            const float cr = std::cos(lat) * R, cz = std::sin(lat) * R;
+            for (int i = 0; i < nSeg; ++i) {
+                const float a = 2.f * kPi * i / nSeg;
+                ring[r].push_back(m.add(centre + u * (cr * std::cos(a)) +
+                                            v * (cr * std::sin(a)) + nOut * cz,
+                                        Vec3f(16, 15, 18)));
+            }
+        }
+        for (int r = 0; r + 1 < nRing; ++r)
+            for (int i = 0; i < nSeg; ++i) {
+                const int j = (i + 1) % nSeg;
+                m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
+                m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
+            }
+    }
+
+    // Dorsal fin. Anatomically it belongs further down the animal, but it is
+    // half of what makes a grey shape read as a shark at a glance, so it
+    // stands on the back of the skull. A swept triangle with real chord and
+    // thickness -- built as an outline given a left and a right copy, which
+    // is why it needs no winding care.
+    {
+        const SharkSection a = sharkSection(0.06f, p);
+        const SharkSection b = sharkSection(0.40f, p);
+        const float rise = 0.60f * (p.cyBack - p.topBack);
+        const Vec3f outline[3] = {
+            Vec3f(0.f, b.cy - b.ryUp * 0.97f, b.z),                 // leading
+            Vec3f(0.f, a.cy - a.ryUp * 0.97f, a.z),                 // trailing
+            Vec3f(0.f, b.cy - b.ryUp * 0.97f - rise,                // tip, swept
+                  b.z + 0.78f * (a.z - b.z)),
+        };
+        const float halfT = 0.115f * p.rxMax;
+        const Vec3f finCol(118, 114, 110), tipCol(78, 76, 76);
+        int L[3], R[3];
+        for (int k = 0; k < 3; ++k) {
+            // The fin thins to nothing at its tip and along its leading edge.
+            const float th = halfT * (k == 2 ? 0.18f : 1.f);
+            const Vec3f col = (k == 2) ? tipCol : finCol;
+            L[k] = m.add(outline[k] + Vec3f(-th, 0.f, 0.f), col);
+            R[k] = m.add(outline[k] + Vec3f(th, 0.f, 0.f), col);
+        }
+        m.face(L[0], L[1], L[2]);
+        m.face(R[0], R[2], R[1]);
+        for (int k = 0; k < 3; ++k) {
+            const int k2 = (k + 1) % 3;
+            m.face(L[k], R[k], R[k2]);
+            m.face(L[k], R[k2], L[k2]);
+        }
+    }
+    m.computeNormals();
+    return m;
+}
+
 // --- Projection + rasteriser -----------------------------------------------
 
 // Orthographic: the basis already carries the head's real 3D orientation, so
@@ -647,15 +974,39 @@ void render(cv::Mat& frame, const Head& head, Species species) {
     if (frame.empty() || frame.type() != CV_8UC3) return;
     if (head.unit < 12.f) return; // too small to render cleanly
 
-    const Style st = styleFor(species);
-    const float wig = 0.05f * std::sin((float)head.phase * 0.11f);
     std::vector<Mesh> meshes;
-    meshes.push_back(buildEar(-1.f, wig, head, st));
-    meshes.push_back(buildEar(+1.f, wig, head, st));
-    if (st.snout) {
-        meshes.push_back(buildSnout(head, st));
+    if (species == Species::Shark) {
+        const SharkProfile sp = sharkProfile(head);
+        // A little always ajar, so the teeth show even with the mouth shut,
+        // then opened the rest of the way by the jawOpen blendshape.
+        const float ang = 0.07f + 0.34f * clampf(head.open, 0.f, 1.f);
+        const SharkSection hinge = sharkSection(sp.sHinge, sp);
+        const Vec3f pivot(0.f, hinge.cy, hinge.z);
+        // +x is the head's right, so a positive rotation about it swings
+        // what is in front of the hinge downward -- the jaw dropping open.
+        const Matx33f Rj = rotAxis(Vec3f(1.f, 0.f, 0.f), ang);
+
+        meshes.push_back(buildSharkHalf(head, sp, true));
+        meshes.push_back(buildSharkTeeth(head, sp, true));
+        Mesh jaw = buildSharkHalf(head, sp, false);
+        Mesh lowTeeth = buildSharkTeeth(head, sp, false);
+        for (Mesh* j : {&jaw, &lowTeeth}) {
+            for (auto& q : j->pos) q = rotAbout(Rj, q, pivot);
+            j->computeNormals();
+        }
+        meshes.push_back(std::move(jaw));
+        meshes.push_back(std::move(lowTeeth));
+        meshes.push_back(buildSharkTrim(head, sp));
     } else {
-        meshes.push_back(buildNose(head, st));
+        const Style st = styleFor(species);
+        const float wig = 0.05f * std::sin((float)head.phase * 0.11f);
+        meshes.push_back(buildEar(-1.f, wig, head, st));
+        meshes.push_back(buildEar(+1.f, wig, head, st));
+        if (st.snout) {
+            meshes.push_back(buildSnout(head, st));
+        } else {
+            meshes.push_back(buildNose(head, st));
+        }
     }
 
     // Image-space bounding box of every projected vertex -> the region touched.

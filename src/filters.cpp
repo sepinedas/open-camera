@@ -803,13 +803,25 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
         //    which is what a 3 px margin, left over from when these filters
         //    only painted the mesh, was doing;
         //  * the warps need room for their Gaussian falloff and the tears.
+        //  * the shark is not an overlay at all but a head in place of the
+        //    one that is there, bigger than it on every side and with a jaw
+        //    that swings well below the chin. Swept over jaw, yaw and pitch
+        //    it reaches 48% of a face-width past a side, 38% above the crown
+        //    and 79% below it -- so the region here is several times the face
+        //    box. There is no saving to be had: the model really is that big,
+        //    and clipping it would be far worse than re-encoding the area.
         const bool wireOnly = (filter == Filter::FaceMesh);
+        const bool shark = (filter == Filter::Shark);
         const bool animal = (filter == Filter::DogFace ||
                              filter == Filter::PigFace ||
                              filter == Filter::Grinch);
         int mx, mtop, mbot;
         if (wireOnly) {
             mx = mtop = mbot = 3;
+        } else if (shark) {
+            mx = std::max(12, f.width * 55 / 100);
+            mtop = std::max(12, f.height * 42 / 100);
+            mbot = std::max(12, f.height * 85 / 100);
         } else if (animal) {
             mx = std::max(10, f.width * 2 / 5);
             mtop = std::max(10, f.height * 2 / 5);
@@ -852,6 +864,9 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applyAnimalFace(roi, f, off, phase, face3d::Species::Pig);
         } else if (filter == Filter::Grinch) {
             applyAnimalFace(roi, f, off, phase, face3d::Species::Grinch);
+        } else if (filter == Filter::Shark) {
+            // No mesh paint: the model covers the face rather than colouring it.
+            applySharkFace(roi, f, off, phase);
         }
     }
 }
@@ -1044,10 +1059,9 @@ void FaceFilter::applyFaceMesh(cv::Mat& frame, const Face& f,
 // MediaPipe supplies a depth per landmark, this is a genuine 3D frame -- no
 // guessing yaw from how the nose divides the face, and no foreshortening
 // correction, which is what the old rig needed and never got quite right.
-void FaceFilter::drawAnimalParts(cv::Mat& frame, const Face& f,
-                                 cv::Point2f off, double phase,
-                                 face3d::Species species) const {
-    if ((int)f.mesh3.size() < 468) return;
+bool FaceFilter::headFromFace(const Face& f, cv::Point2f off, double phase,
+                              face3d::Head& out) const {
+    if ((int)f.mesh3.size() < 468) return false;
     auto V = [&](int i) {
         return cv::Vec3f(f.mesh3[i].x, f.mesh3[i].y, f.mesh3[i].z);
     };
@@ -1067,7 +1081,7 @@ void FaceFilter::drawAnimalParts(cv::Mat& frame, const Face& f,
     const cv::Vec3f cL = eyeCentre(kEyeLOuter, kEyeLInner, kEyeLUp, kEyeLLow);
     const cv::Vec3f span = cL - cR;
     const float unit = std::sqrt(span.dot(span));
-    if (unit < 12.f) return;
+    if (unit < 12.f) return false;
 
     cv::Vec3f ex = unit3(span);
     const cv::Vec3f ey0 = unit3(V(kChin) - V(kForehead));
@@ -1079,7 +1093,7 @@ void FaceFilter::drawAnimalParts(cv::Mat& frame, const Face& f,
     // "left" outer eye corner is on the image right; flip so +x is image-right.
     if (ex[0] < 0.f) { ex = -ex; ez = -ez; }
 
-    face3d::Head h;
+    face3d::Head& h = out;
     h.R = cv::Matx33f(ex[0], ey[0], ez[0],
                       ex[1], ey[1], ez[1],
                       ex[2], ey[2], ez[2]); // columns: right, down, back
@@ -1096,14 +1110,35 @@ void FaceFilter::drawAnimalParts(cv::Mat& frame, const Face& f,
         return cv::Vec3f(d.dot(ex), d.dot(ey), d.dot(ez)) * (1.f / unit);
     };
     const cv::Vec3f crown = inHead(kForehead);
+    const cv::Vec3f chin = inHead(kChin);
     const cv::Vec3f nose = inHead(kNoseTip);
     const cv::Vec3f tL = inHead(kTempleR), tR = inHead(kTempleL);
     h.crownY = clampf(crown[1], -1.60f, -0.45f);
     h.headHalfW = clampf(0.5f * std::fabs(tR[0] - tL[0]), 0.70f, 1.80f);
     h.noseY = clampf(nose[1], 0.35f, 1.10f);
     h.noseZ = clampf(nose[2], -0.90f, -0.05f);
+    h.chinY = clampf(chin[1], h.noseY + 0.25f, 2.20f);
 
+    // Expression. The warps read these too; a model that replaces the head
+    // needs them or it is a mask sitting on a face rather than worn by one.
+    h.open = f.open;
+    h.smile = f.smile;
+    return true;
+}
+
+void FaceFilter::drawAnimalParts(cv::Mat& frame, const Face& f,
+                                 cv::Point2f off, double phase,
+                                 face3d::Species species) const {
+    face3d::Head h;
+    if (!headFromFace(f, off, phase, h)) return;
     face3d::render(frame, h, species);
+}
+
+void FaceFilter::applySharkFace(cv::Mat& frame, const Face& f,
+                                cv::Point2f off, double phase) const {
+    face3d::Head h;
+    if (!headFromFace(f, off, phase, h)) return;
+    face3d::render(frame, h, face3d::Species::Shark);
 }
 
 void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
@@ -1186,7 +1221,8 @@ Filter nextFilter(Filter f) {
         case Filter::FaceMesh: return Filter::DogFace;
         case Filter::DogFace:  return Filter::PigFace;
         case Filter::PigFace:  return Filter::Grinch;
-        case Filter::Grinch:   return Filter::None;
+        case Filter::Grinch:   return Filter::Shark;
+        case Filter::Shark:    return Filter::None;
     }
     return Filter::None;
 }
@@ -1200,6 +1236,7 @@ const char* filterName(Filter f) {
         case Filter::DogFace:  return "Dog Face";
         case Filter::PigFace:  return "Pig Face";
         case Filter::Grinch:   return "Grinch";
+        case Filter::Shark:    return "Shark";
     }
     return "";
 }

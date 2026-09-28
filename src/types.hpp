@@ -47,6 +47,7 @@ enum class Filter {
     DogFace,  // a dog painted onto the face mesh, so it moves with the face
     PigFace,  // the same, built as a pig: snout and upright ears
     Grinch,   // green, shaggy, pointed ears and a heavy scowl
+    Shark,    // the whole head replaced by a 3D shark, jaw and all
 };
 
 } // namespace olc

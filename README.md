@@ -287,7 +287,7 @@ build/open-lego-camera [options]
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
 **Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** →
-**Grinch** → off.
+**Grinch** → **Shark** → off.
 The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
@@ -329,6 +329,25 @@ you then capture.
   normal rather than pasted in front of it.
 
   (The character is Dr. Seuss's; the geometry and palette here are ours.)
+- **Shark** is the odd one out: nothing is painted onto the mesh at all. The
+  whole head is replaced by a 3D model — skull, hinged jaw, two rows of teeth,
+  black eyes, gill slits and a dorsal fin — and the mesh drives it rather than
+  being drawn on. The same basis orients it, the measured crown, chin and
+  temples *size* it to the head it is worn by, and the `jawOpen` blendshape
+  works its jaw, so opening your mouth opens the shark's.
+
+  Two things about it are deliberately not anatomical, because the camera only
+  ever sees it from the front:
+
+  * **The snout points down as well as forward.** The projection is
+    orthographic, so a snout aimed at the lens has no length on screen at all.
+    It also has to reach past the chin: anything that tapers forward *inside*
+    the head hides behind the largest cross-section, which is the one that has
+    to cover the head in the first place.
+  * **The countershading is keyed to height, not to the cross-section.**
+    Head-on, almost the entire visible surface is the animal's dorsal third —
+    the white belly faces the floor and shows as a hairline at the silhouette.
+    Shaded honestly the shark comes out uniformly grey.
 
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
