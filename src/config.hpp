@@ -6,6 +6,10 @@ namespace olc {
 
 enum class CameraKind { Auto, PiCam, Webcam };
 
+// Which Waveshare UPS HAT to expect. The models sit at different I2C addresses
+// and carry different packs, so Auto simply probes for each in turn.
+enum class UpsHat { Auto, B, D };
+
 // Runtime options, populated from the command line (see config.cpp).
 struct Config {
     CameraKind camera = CameraKind::Auto;
@@ -22,9 +26,10 @@ struct Config {
     int width = 1280;        // requested preview width
     int height = 720;        // requested preview height
     std::string faceModel;   // override path to the MediaPipe face_landmarker.task
-    bool battery = true;     // look for a Waveshare UPS HAT (D) battery gauge
+    bool battery = true;     // look for a Waveshare UPS HAT battery gauge
+    UpsHat batteryHat = UpsHat::Auto; // which model, or probe for either
     int batteryBus = 1;      // /dev/i2c-N the HAT sits on
-    bool batteryShutdown = false; // power off when the cell reaches the cut-off
+    bool batteryShutdown = false; // power off when the pack reaches the cut-off
 };
 
 // Parse argv. Returns false and prints usage on --help or a bad flag; sets

@@ -16,17 +16,30 @@
 
 namespace olc {
 
+// --- Per-model constants ----------------------------------------------------
+// Everything that differs between the supported UPS HATs. The values come from
+// Waveshare's reference driver for each board (UPS_HAT_B/INA219.py and
+// UPS_HAT_D/INA219.py) -- the two boards use different shunts, different packs
+// and even opposite current polarity, so nothing here is interchangeable.
+
+struct BatteryBoard {
+    UpsHat id;
+    const char* name;
+    std::uint8_t inaAddr;      // INA219 shunt/bus monitor
+    std::uint8_t mcuAddr;      // power-path MCU, or 0 when the board has none
+    std::uint16_t config;      // INA219 config register
+    std::uint16_t calibration; // INA219 calibration register
+    double currentLsbA;        // A per current-register bit
+    double powerLsbW;          // W per power-register bit
+    bool dischargePositive;    // raw current reads + while discharging
+    double emptyV, fullV;      // pack voltage curve, 0% -> 100%
+    double presentV;           // below this: no pack, or the ADC hasn't settled
+    double cutoffV;            // --battery-shutdown threshold
+};
+
 namespace {
 
-// --- Waveshare UPS HAT (D) --------------------------------------------------
-// The addresses and constants below come from Waveshare's reference driver for
-// this exact board (UPS_HAT_D/INA219.py). The (B) and (C) HATs use different
-// shunt resistors and calibration values, so they are not interchangeable.
-
-constexpr std::uint8_t kInaAddr = 0x43; // INA219 shunt/bus monitor
-constexpr std::uint8_t kMcuAddr = 0x2D; // on-board power-path MCU
-
-// INA219 register map.
+// INA219 register map (identical on both boards).
 constexpr std::uint8_t kRegConfig = 0x00;
 constexpr std::uint8_t kRegShunt = 0x01;
 constexpr std::uint8_t kRegBus = 0x02;
@@ -34,35 +47,14 @@ constexpr std::uint8_t kRegPower = 0x03;
 constexpr std::uint8_t kRegCurrent = 0x04;
 constexpr std::uint8_t kRegCal = 0x05;
 
-// 16 V bus range, /2 gain (80 mV shunt), 12-bit 32-sample averaging on both
-// ADCs, shunt+bus continuous:
-//   RANGE_16V << 13 | DIV_2_80MV << 11 | 12BIT_32S << 7 | 12BIT_32S << 3 | 7
-constexpr std::uint16_t kConfig = 0x0EEF;
+// Bus-voltage scaling is the same in both the 16 V and 32 V ranges.
+constexpr double kBusLsbV = 0.004; // V per bus-register bit (15..3)
 
-// The HAT's shunt is 0.01 ohm, sized for the board's 5 A output:
-//   cal = trunc(0.04096 / (current_lsb * 0.01)) with current_lsb = 152.4 uA.
-constexpr std::uint16_t kCalibration = 26868;
-constexpr double kCurrentLsbA = 0.0001524; // A per current-register bit
-constexpr double kPowerLsbW = 0.003048;    // W per power-register bit
-constexpr double kBusLsbV = 0.004;         // V per bus-register bit (15..3)
-
-// State of charge for the single 21700 Li-ion cell, straight off the terminal
-// voltage: 3.0 V is treated as empty and 4.2 V as full.
-constexpr double kEmptyV = 3.0;
-constexpr double kFullV = 4.2;
-
-// Current above which the cell counts as charging rather than merely idle.
+// Current above which the pack counts as charging rather than merely idle.
 constexpr double kChargingA = 0.05;
 
-// A connected cell never reads anywhere near this low -- protection would have
-// cut it off long before. Anything under it means the first conversion has not
-// landed yet (the ADC averages 32 samples) or no pack is fitted, neither of
-// which should be shown as a flat battery.
-constexpr double kPresentV = 2.0;
-
-// Below this voltage, off charge, the pack is nearly flat. Waveshare's demo
-// shuts the Pi down at the same threshold after a minute of it.
-constexpr double kCutoffV = 3.15;
+// How long the pack must stay under the cut-off, off charge, before the app
+// treats it as critical.
 constexpr auto kCutoffGrace = std::chrono::seconds(60);
 
 constexpr auto kPollInterval = std::chrono::milliseconds(2000);
@@ -72,16 +64,46 @@ constexpr auto kPollInterval = std::chrono::milliseconds(2000);
 // jitters by several points from frame to frame.
 constexpr double kSmoothing = 0.25;
 
+// The supported boards, probed in this order when --battery-hat is auto. Their
+// INA219s sit at different addresses, so the probe is unambiguous.
+constexpr BatteryBoard kBoards[] = {
+    // UPS HAT (B): 2x 18650 in series (6.0-8.4 V), 0.1 ohm shunt, 32 V / 2 A
+    // profile (cal 4096, 100 uA per bit). Its demo prints the raw current
+    // as-is, with negative meaning discharge, so the polarity already matches
+    // our convention. There is no power-path MCU on this board, and Waveshare
+    // ship no low-voltage shutdown for it -- the 6.3 V cut-off below is ours,
+    // picked as the same 3.15 V per cell the (D) uses.
+    {UpsHat::B, "UPS HAT (B)", 0x42, 0x00, 0x3EEF, 4096, 0.0001, 0.002, false,
+     6.0, 8.4, 4.0, 6.3},
+
+    // UPS HAT (D): one 21700 cell (3.0-4.2 V), 0.01 ohm shunt sized for the
+    // board's 5 A output, 16 V / 5 A profile (cal 26868, 152.4 uA per bit).
+    // Its demo negates the current register, so discharge reads positive here.
+    // 0x2D is the MCU that owns the power path.
+    {UpsHat::D, "UPS HAT (D)", 0x43, 0x2D, 0x0EEF, 26868, 0.0001524, 0.003048,
+     true, 3.0, 4.2, 2.0, 3.15},
+};
+
 // Reinterpret a raw register as the two's-complement value the INA219 reports
 // for its signed shunt/current/power registers.
 inline int signed16(std::uint16_t raw) {
     return (raw > 32767) ? (int)raw - 65536 : (int)raw;
 }
 
+// Two-digit hex, for log lines that name an I2C address.
+std::string hex8(std::uint8_t v) {
+    static const char* d = "0123456789abcdef";
+    return std::string("0x") + d[(v >> 4) & 0xF] + d[v & 0xF];
+}
+
+// Is this board one the user asked for?
+bool wanted(const BatteryBoard& b, UpsHat choice) {
+    return choice == UpsHat::Auto || choice == b.id;
+}
+
 } // namespace
 
-Battery::Battery(int fd, std::string desc, bool shutdown)
-    : fd_(fd), desc_(std::move(desc)), shutdownEnabled_(shutdown) {}
+Battery::Battery(int fd, bool shutdown) : fd_(fd), shutdownEnabled_(shutdown) {}
 
 Battery::~Battery() {
 #ifdef __linux__
@@ -132,6 +154,23 @@ bool Battery::writeReg(std::uint8_t addr, std::uint8_t reg,
     return ::ioctl(fd_, I2C_RDWR, &xfer) >= 0;
 }
 
+bool Battery::adopt(const BatteryBoard& board) {
+    // Anything at the INA219's address will ACK a config read.
+    std::uint16_t probe = 0;
+    if (!readReg(board.inaAddr, kRegConfig, probe)) return false;
+
+    if (!writeReg(board.inaAddr, kRegCal, board.calibration) ||
+        !writeReg(board.inaAddr, kRegConfig, board.config)) {
+        std::cerr << "battery: something answered at " << hex8(board.inaAddr)
+                  << " but would not accept the " << board.name
+                  << " configuration\n";
+        return false;
+    }
+
+    board_ = &board;
+    return true;
+}
+
 std::unique_ptr<Battery> Battery::open(const Config& cfg) {
     if (!cfg.battery) return nullptr;
 
@@ -150,62 +189,69 @@ std::unique_ptr<Battery> Battery::open(const Config& cfg) {
         return nullptr;
     }
 
-    std::unique_ptr<Battery> b(new Battery(fd, path, cfg.batteryShutdown));
+    std::unique_ptr<Battery> b(new Battery(fd, cfg.batteryShutdown));
 
-    // Probe: anything at the HAT's address will ACK a config read.
-    std::uint16_t probe = 0;
-    if (!b->readReg(kInaAddr, kRegConfig, probe)) {
-        std::cerr << "battery: no UPS HAT (D) at 0x43 on " << path
-                  << "; running without a gauge\n";
+    for (const BatteryBoard& board : kBoards)
+        if (wanted(board, cfg.batteryHat) && b->adopt(board)) break;
+
+    if (!b->board_) {
+        // Name what was actually looked for, so a wrong --battery-hat or a HAT
+        // strapped to a non-default address is obvious from the log alone.
+        std::cerr << "battery: no UPS HAT answered on " << path << " (tried";
+        bool first = true;
+        for (const BatteryBoard& board : kBoards)
+            if (wanted(board, cfg.batteryHat)) {
+                std::cerr << (first ? " " : ", ") << hex8(board.inaAddr)
+                          << " for the " << board.name;
+                first = false;
+            }
+        std::cerr << "); running without a gauge\n";
         return nullptr;
     }
 
-    if (!b->writeReg(kInaAddr, kRegCal, kCalibration) ||
-        !b->writeReg(kInaAddr, kRegConfig, kConfig)) {
-        std::cerr << "battery: UPS HAT (D) found but would not accept its "
-                     "configuration; running without a gauge\n";
-        return nullptr;
-    }
-
-    b->desc_ = "Waveshare UPS HAT (D) @ " + path + " 0x43";
+    b->desc_ = std::string("Waveshare ") + b->board_->name + " @ " + path +
+               " " + hex8(b->board_->inaAddr);
     b->sample(); // seed the smoothed voltage so the first frame shows a level
     b->lastPoll_ = Clock::now();
     return b;
 }
 
 bool Battery::sample() {
+    if (!board_) return false; // nothing adopted yet
+    const BatteryBoard& board = *board_;
+
     // The INA219 loses its calibration on a bus glitch or a brown-out, which
-    // silently zeroes the current and power registers. Waveshare's driver
-    // rewrites it before every read; do the same rather than trust it to stick.
-    if (!writeReg(kInaAddr, kRegCal, kCalibration)) return false;
+    // silently zeroes the current and power registers. Waveshare's drivers
+    // rewrite it before every read; do the same rather than trust it to stick.
+    if (!writeReg(board.inaAddr, kRegCal, board.calibration)) return false;
 
     std::uint16_t bus = 0, shunt = 0, current = 0, power = 0;
-    if (!readReg(kInaAddr, kRegBus, bus) ||
-        !readReg(kInaAddr, kRegShunt, shunt) ||
-        !readReg(kInaAddr, kRegCurrent, current) ||
-        !readReg(kInaAddr, kRegPower, power))
+    if (!readReg(board.inaAddr, kRegBus, bus) ||
+        !readReg(board.inaAddr, kRegShunt, shunt) ||
+        !readReg(board.inaAddr, kRegCurrent, current) ||
+        !readReg(board.inaAddr, kRegPower, power))
         return false;
 
     (void)shunt; // read to keep the sequence identical to the reference driver
 
     // Bus register: bits 15..3 hold the voltage, the low bits are status flags.
     double volts = (double)(bus >> 3) * kBusLsbV;
-    if (volts < kPresentV) {
+    if (volts < board.presentV) {
         st_.valid = false; // no pack, or the ADC hasn't produced a reading yet
         return false;
     }
 
-    // The shunt is wired so discharge current reads positive on this board;
-    // flip it to the convention used everywhere else here (+ = into the cell),
-    // matching the negation in Waveshare's demo.
-    double amps = -(double)signed16(current) * kCurrentLsbA;
-    double watts = (double)signed16(power) * kPowerLsbW;
+    // Normalise to "+ = into the pack" regardless of how the board's shunt is
+    // wired; on the (D) that means the negation its demo applies.
+    double amps = (double)signed16(current) * board.currentLsbA;
+    if (board.dischargePositive) amps = -amps;
+    double watts = (double)signed16(power) * board.powerLsbW;
 
     smoothedV_ = (smoothedV_ <= 0.0)
                      ? volts
                      : smoothedV_ + kSmoothing * (volts - smoothedV_);
 
-    double pct = (smoothedV_ - kEmptyV) / (kFullV - kEmptyV) * 100.0;
+    double pct = (smoothedV_ - board.emptyV) / (board.fullV - board.emptyV) * 100.0;
 
     st_.valid = true;
     st_.volts = volts;
@@ -217,12 +263,15 @@ bool Battery::sample() {
 }
 
 bool Battery::armAutoRestart() {
+    // The (B) has no MCU to ask: it comes back only when its button is pressed.
+    if (!board_ || board_->mcuAddr == 0) return false;
+
     // Register 0x01 of the HAT's MCU: 0x55 makes it power the Pi back up by
-    // itself once the cell has recovered, instead of staying off until someone
+    // itself once the pack has recovered, instead of staying off until someone
     // presses the button. It is a single-byte write, so not writeReg().
     std::uint8_t buf[2] = {0x01, 0x55};
     i2c_msg msg{};
-    msg.addr = kMcuAddr;
+    msg.addr = board_->mcuAddr;
     msg.flags = 0;
     msg.len = 2;
     msg.buf = buf;
@@ -238,6 +287,7 @@ bool Battery::armAutoRestart() {
 // I2C through ioctl is Linux-only; elsewhere the app runs without a gauge.
 bool Battery::readReg(std::uint8_t, std::uint8_t, std::uint16_t&) const { return false; }
 bool Battery::writeReg(std::uint8_t, std::uint8_t, std::uint16_t) const { return false; }
+bool Battery::adopt(const BatteryBoard&) { return false; }
 bool Battery::sample() { return false; }
 bool Battery::armAutoRestart() { return false; }
 
@@ -254,10 +304,12 @@ void Battery::poll() {
     // reading and try again on the next interval.
     if (!sample()) return;
 
-    // Track how long the cell has been under the cut-off while off charge. A
+    // Track how long the pack has been under the cut-off while off charge. A
     // single dip during a capture burst is normal, so only a sustained low
     // reading counts as critical.
-    const bool under = st_.volts < kCutoffV && !st_.charging;
+    // A successful sample() guarantees a board was adopted.
+    const double cutoff = board_->cutoffV;
+    const bool under = st_.volts < cutoff && !st_.charging;
     if (under) {
         if (!low_) {
             low_ = true;
@@ -272,7 +324,7 @@ void Battery::poll() {
         auto left = std::chrono::duration_cast<std::chrono::seconds>(
                         kCutoffGrace - (now - lowSince_))
                         .count();
-        std::cerr << "battery: " << st_.volts << " V is below the " << kCutoffV
+        std::cerr << "battery: " << st_.volts << " V is below the " << cutoff
                   << " V cut-off; powering off in " << left
                   << " s unless charged\n";
     }

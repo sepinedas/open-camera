@@ -69,11 +69,13 @@ static void printUsage(const char* prog) {
         "                               driving the facial filters (default: the\n"
         "                               packaged model under /opt/mediapipe or\n"
         "                               /usr/share/mediapipe/models)\n"
-        "  --no-battery                 skip the Waveshare UPS HAT (D) battery\n"
+        "  --no-battery                 skip the Waveshare UPS HAT battery\n"
         "                               gauge (it is auto-detected otherwise)\n"
+        "  --battery-hat auto|b|d       which UPS HAT to expect: (B) at 0x42\n"
+        "                               or (D) at 0x43 (default: auto-probe)\n"
         "  --battery-bus N              I2C bus the UPS HAT is on (default: 1)\n"
-        "  --battery-shutdown           power the Pi off when the cell reaches\n"
-        "                               the 3.15 V cut-off (off by default)\n"
+        "  --battery-shutdown           power the Pi off when the pack reaches\n"
+        "                               its cut-off voltage (off by default)\n"
         "  --help                       show this help\n";
 }
 
@@ -166,6 +168,15 @@ bool parseArgs(int argc, char** argv, Config& out, int* exitCode) {
             out.faceModel = v;
         } else if (a == "--no-battery") {
             out.battery = false;
+        } else if (a == "--battery-hat") {
+            const char* v = need(i); if (!v) return false;
+            if (!std::strcmp(v, "auto")) out.batteryHat = UpsHat::Auto;
+            else if (!std::strcmp(v, "b") || !std::strcmp(v, "B")) out.batteryHat = UpsHat::B;
+            else if (!std::strcmp(v, "d") || !std::strcmp(v, "D")) out.batteryHat = UpsHat::D;
+            else {
+                std::cerr << "bad --battery-hat (auto|b|d): " << v << "\n";
+                *exitCode = 2; return false;
+            }
         } else if (a == "--battery-bus") {
             const char* v = need(i); if (!v) return false;
             out.batteryBus = std::atoi(v);

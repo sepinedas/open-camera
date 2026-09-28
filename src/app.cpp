@@ -390,11 +390,13 @@ void App::drawBatteryBadge() {
 // HAT armed to boot the Pi again once it has charge, then halt cleanly rather
 // than letting the pack run down into its own protection cut-off.
 void App::powerOffLowBattery() {
-    std::cerr << "battery: cell is flat (" << battery_->status().volts
+    std::cerr << "battery: pack is flat (" << battery_->status().volts
               << " V); shutting down\n";
+    // The (D) can be told to boot the Pi again by itself; the (B) has no MCU to
+    // ask, so it stays off until someone presses its button.
     if (!battery_->armAutoRestart())
-        std::cerr << "battery: UPS HAT MCU (0x2d) did not answer; it will need "
-                     "a button press to power up again\n";
+        std::cerr << "battery: this HAT will not power the Pi back up on its "
+                     "own; press its button once the pack is charged\n";
 
     // Tell whoever is watching the screen why it is going dark.
     beginFrame();

@@ -29,8 +29,8 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
   factor (e.g. `2.0x`) shows briefly while zooming.
 - A **shutter-flash animation** plays when a photo is taken, and the **gallery
   button shows a thumbnail** of the most recent capture.
-- A **battery monitor** for the **Waveshare UPS HAT (D)**: the app reads the
-  HAT's INA219 over I²C and shows a **gauge in the top-right corner** — level,
+- A **battery monitor** for the **Waveshare UPS HAT (B)** and **(D)**: the app
+  reads the HAT's INA219 over I²C and shows a **gauge in the top-right corner** — level,
   percentage, a **bolt while charging**, and a pulsing red **LOW BATTERY**
   warning when the cell is nearly flat. Auto-detected; the app runs exactly as
   before when no HAT is fitted.
@@ -65,7 +65,7 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
 | Icon-only buttons, no text | all icons are drawn as vector shapes (`icons.cpp`, SDL2_gfx) |
 | Headless — no X11 / window manager | SDL2 `kmsdrm`/`fbcon` renders directly to HDMI |
 | WhatsApp-style facial filters | `FaceFilter` runs MediaPipe's Face Landmarker and warps the real mouth/brow landmarks with `cv::remap`; the crying filter also draws tears (`filters.cpp`) |
-| Battery monitor | `Battery` reads the Waveshare UPS HAT (D)'s INA219 over I²C (`battery.cpp`) and `drawBattery` paints the corner gauge (`icons.cpp`) |
+| Battery monitor | `Battery` reads the INA219 on a Waveshare UPS HAT (B) or (D) over I²C, with the per-model constants in one board table (`battery.cpp`); `drawBattery` paints the corner gauge (`icons.cpp`) |
 
 ## Dependencies
 
@@ -276,9 +276,10 @@ build/open-lego-camera [options]
   --driver NAME                force SDL video driver (kmsdrm, fbcon, x11)
   --windowed                   run in a window instead of fullscreen
   --face-model PATH            MediaPipe face_landmarker.task for the filters
-  --no-battery                 skip the Waveshare UPS HAT (D) battery gauge
+  --no-battery                 skip the Waveshare UPS HAT battery gauge
+  --battery-hat auto|b|d       which UPS HAT to expect (default: auto-probe)
   --battery-bus N              I2C bus the UPS HAT is on (default: 1)
-  --battery-shutdown           power off at the 3.15 V cut-off (off by default)
+  --battery-shutdown           power off at the pack cut-off (off by default)
   --help                       show this help
 ```
 
@@ -451,21 +452,32 @@ still turns the whole UI on top.
 - `--windowed` is handy when developing on a desktop (the app then uses the
   desktop's SDL driver automatically).
 
-## Battery monitor (Waveshare UPS HAT (D))
+## Battery monitor (Waveshare UPS HAT)
 
-With a [Waveshare UPS HAT (D)](https://www.waveshare.com/wiki/UPS_HAT_(D)) on
-the Pi's 40-pin header, the app shows a **battery gauge in the top-right
-corner** of the welcome, camera and gallery screens:
+With a Waveshare [UPS HAT (B)](https://www.waveshare.com/wiki/UPS_HAT_(B)) or
+[UPS HAT (D)](https://www.waveshare.com/wiki/UPS_HAT_(D)) on the Pi's 40-pin
+header, the app shows a **battery gauge in the top-right corner** of the
+welcome, camera and gallery screens:
 
 | Gauge | Meaning |
 | --- | --- |
 | green / amber / red fill + `NN%` | charge level (>50% / >20% / below) |
-| blue fill with a **lightning bolt** | the cell is taking charge |
+| blue fill with a **lightning bolt** | the pack is taking charge |
 | pulsing red + `LOW BATTERY` | at or below 15%, off charge |
 
-Nothing needs to be passed on the command line: at startup the app looks for the
-HAT's **INA219** at `0x43` on `/dev/i2c-1` and simply runs without a gauge if
-nothing answers. Two things have to be true on the Pi first:
+Nothing needs to be passed on the command line. The two models sit at different
+I²C addresses, so at startup the app probes for each in turn and simply runs
+without a gauge if neither answers:
+
+| | UPS HAT (B) | UPS HAT (D) |
+| --- | --- | --- |
+| INA219 address | `0x42` | `0x43` |
+| Pack | 2 × 18650 **in series** | 1 × 21700 |
+| Empty → full | 6.0 V → 8.4 V | 3.0 V → 4.2 V |
+| Shunt / profile | 0.1 Ω, 32 V / 2 A | 0.01 Ω, 16 V / 5 A |
+| Power-path MCU | none | `0x2d` |
+
+Two things have to be true on the Pi first:
 
 ```sh
 # 1. I2C enabled -- add to /boot/firmware/config.txt (or use raspi-config), then reboot
@@ -474,33 +486,42 @@ dtparam=i2c_arm=on
 # 2. your user allowed to use it (log out and back in afterwards)
 sudo usermod -aG i2c "$USER"
 
-# check the HAT is answering: 43 (gauge) and 2d (power-path MCU) should appear
+# check the HAT is answering: 42 for a (B), or 43 (+ 2d) for a (D)
 i2cdetect -y 1
 ```
 
-The register map, calibration (0.01 Ω shunt, 16 V / 5 A profile) and the
-state-of-charge curve all follow Waveshare's own reference driver for this
-board, so the readings match its `INA219.py` demo. Note that the percentage is
-**estimated from the cell's terminal voltage** (3.0 V empty → 4.2 V full), not
+Each board's register map, calibration and state-of-charge curve follow
+Waveshare's own reference driver for that model, so the readings match what its
+`INA219.py` demo prints. The per-model constants live in a single `kBoards`
+table in [`src/battery.cpp`](src/battery.cpp) — adding another INA219-based HAT
+means adding a row, not branching the driver.
+
+Note that the percentage is **estimated from the pack's terminal voltage**, not
 counted in coulombs, so it sags under a heavy load and recovers when the load
-drops; the app smooths it so the number doesn't flicker. The `(B)` and `(C)`
-HATs use different shunts and calibration values and are *not* interchangeable
-with this code.
+drops; the app smooths it so the number doesn't flicker. Beware that the `(C)`
+HAT uses different values again and is *not* covered here.
 
 Useful flags:
 
+- `--battery-hat auto|b|d` — skip the probe and expect one specific model.
+  Handy if something else on the bus answers at `0x42`/`0x43`.
 - `--battery-bus N` — the HAT is on a bus other than `/dev/i2c-1`.
 - `--no-battery` — skip the probe entirely.
-- `--battery-shutdown` — **opt-in**: when the cell stays below the HAT's
-  **3.15 V cut-off** for a minute while off charge, show `BATTERY EMPTY`, ask
-  the HAT's MCU to power the Pi back up by itself once the cell recovers
-  (register `0x01` ← `0x55` at `0x2d`), then halt. Without this flag the app
-  only ever *reports* the level. The shutdown runs `sudo -n poweroff`, so it
-  needs passwordless sudo (the default for the `pi` user) or root.
+- `--battery-shutdown` — **opt-in**: when the pack stays below its cut-off
+  (**6.3 V** on the (B), **3.15 V** on the (D)) for a minute while off charge,
+  show `BATTERY EMPTY`, then halt. Without this flag the app only ever *reports*
+  the level. On the (D) it first asks the power-path MCU to boot the Pi again by
+  itself once the pack recovers (register `0x01` ← `0x55` at `0x2d`); the (B)
+  has no such MCU, so it stays off until you press its button. The shutdown runs
+  `sudo -n poweroff`, so it needs passwordless sudo (the default for the `pi`
+  user) or root.
+
+> Waveshare ship no low-voltage shutdown for the (B), so its 6.3 V cut-off is
+> this project's own choice — the same 3.15 V per cell the (D) uses.
 
 > The KiCad [CM4 carrier board](hardware/README.md) in this repo takes a
 > different route — an on-board **MAX17048** fuel gauge — which this code does
-> not read. The UPS HAT above is the off-the-shelf option for a normal
+> not read. The UPS HATs above are the off-the-shelf option for a normal
 > 40-pin Pi.
 
 ## Headless HDMI (no desktop)
@@ -726,7 +747,7 @@ top while you pinch.
 ## Design notes
 
 - **Modules** (`src/`): `camera` (dual backend + digital zoom), `gallery`
-  (list/navigate/delete), `battery` (UPS HAT (D) INA219 over I²C), `icons`
+  (list/navigate/delete), `battery` (UPS HAT (B)/(D) INA219 over I²C), `icons`
   (procedural vector icons), `ui` (auto-hide menu, layout, hit-testing), `app`
   (SDL display, event loop, per-mode rendering), `config` (CLI).
 - **Zoom** is a uniform centre-crop-and-rescale applied to both preview and
