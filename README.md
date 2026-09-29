@@ -347,13 +347,23 @@ you then capture.
 
   * The **shark** is a long smooth cone: a rostrum, two rows of teeth, gill
     slits, a dorsal fin, and a jaw that drops a long way.
-  * The **squirrel** is a round braincase that holds its width most of the way
-    back and then draws out into a short muzzle. Over it go big round ears
+  * The **squirrel** is a round cranium, widest at the cheeks, with a short
+    blunt muzzle stepping out of its lower front. That outline is *not* any
+    exponent, which is how the first attempt came out looking like a shark in
+    a brown coat: a single monotonic taper can only make a cone. So the
+    squirrel's silhouette is given as control points instead, sampled along
+    the head, and which description a species uses is a function pointer in
+    its shape. Over it go big round ears
     that answer the brows, large forward eyes, a nose on the point of the
     muzzle, **buck teeth** hanging just under it — placed in front of the
     muzzle's face, or the closed jaw simply swallows them — and **cheek
     pouches** that fill out on `cheekPuff`, which is the one blendshape
     nothing else here had a use for.
+
+    Its eyes are placed by coordinate rather than by angle round the
+    cross-section, the way the shark's are. That works for a shark because its
+    sections are not far off round; on a cranium two head-lengths tall, the
+    angle that puts an eye at the right height puts it out on the silhouette.
 
   Two things about both are deliberately not anatomical, because the camera
   only ever sees them from the front:

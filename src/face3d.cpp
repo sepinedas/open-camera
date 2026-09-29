@@ -760,6 +760,19 @@ Mesh buildTongue(const Vec3f& base, const Vec3f& tip, float halfW,
 // against it. Where they meet is the mouth line, and because the loft's
 // cross-section is an ellipse centred on that line, the line needs no separate
 // definition -- it is simply y = cy(s), the centre of each cross-section.
+// The silhouette is sampled at this many control points, evenly spaced along
+// the head, for the species whose outline is given that way.
+constexpr int kProfN = 9;
+
+struct Section {
+    float z, cy, rx, ryUp, ryLo, gape;
+};
+
+struct HeadShape;
+Section sectionAt(float s, const HeadShape& p);
+Section coneSection(float s, const HeadShape& p);   // the shark's outline
+Section muzzleSection(float s, const HeadShape& p); // the squirrel's
+
 // A whole head, in place of the one that is there: a skull and a jaw that
 // hinges against it, swept along the head's own longitudinal axis from s = 0
 // at the back of the skull to s = 1 at the point of the muzzle.
@@ -782,12 +795,23 @@ struct HeadShape {
     float sHinge;          // where the jaw parts company with the skull
     float zBack, zTip;
 
-    // Girth along the head: taper = (1 - s^girthPow)^girthRoot, times a
-    // gentle bulge. A low power with a high root holds the braincase wide and
-    // then draws the muzzle away late; the reverse gives a smooth cone.
+    // --- how the silhouette is described ---------------------------------
+    //
+    // Two kinds of head need two kinds of description, so the shape carries
+    // the one it uses and a pointer to the code that reads it.
+    //
+    // A cone (the shark) is three power curves and a monotonic taper: girth =
+    // (1 - s^girthPow)^girthRoot, times a gentle bulge.
     float girthPow, girthRoot, girthBulge;
-    // How steeply each silhouette curve runs from its back value to the point.
     float topPow, cyPow, botPow;
+    // A head with a muzzle on it (the squirrel) is not any exponent: it is
+    // wide and round over the cranium, then steps in. Those are control
+    // points, sampled evenly from s = 0 at the back to s = 1 at the point --
+    // `top`, `mouth` and `bot` in fractions of the head's length below the
+    // crown, `girth` as a fraction of rxMax.
+    float top[kProfN], mouth[kProfN], bot[kProfN], girth[kProfN];
+
+    Section (*sectionFn)(float s, const HeadShape& p);
 
     // Countershading, keyed to height down the model. `waterA` is where the
     // back gives way to the flank and `waterB` where the flank gives way to
@@ -826,6 +850,7 @@ HeadShape sharkShape(const Head& h) {
     p.zTip = h.noseZ - 1.15f;
     p.girthPow = 1.75f; p.girthRoot = 0.60f; p.girthBulge = 0.08f;
     p.topPow = 1.75f; p.cyPow = 1.45f; p.botPow = 1.15f;
+    p.sectionFn = coneSection;
     p.back = Vec3f(112, 108, 104);   // BGR: slate grey
     p.flank = Vec3f(150, 148, 146);
     p.belly = Vec3f(228, 231, 234);
@@ -853,11 +878,8 @@ float gapeAt(float s, const HeadShape& p) {
     return clampf((s - p.sHinge) / 0.11f, 0.f, 1.f);
 }
 
-struct Section {
-    float z, cy, rx, ryUp, ryLo, gape;
-};
-
-Section sectionAt(float s, const HeadShape& p) {
+// The shark's: a cone, described by exponents.
+Section coneSection(float s, const HeadShape& p) {
     Section c;
     const float t = clampf(s, 0.f, 1.f);
     c.z = p.zBack + (p.zTip - p.zBack) * t;
@@ -873,13 +895,48 @@ Section sectionAt(float s, const HeadShape& p) {
     return c;
 }
 
+// Catmull-Rom through evenly spaced control points, clamped at both ends.
+float splineAt(const float* q, float s) {
+    const float t = clampf(s, 0.f, 1.f) * (kProfN - 1);
+    int i = (int)t;
+    if (i > kProfN - 2) i = kProfN - 2;
+    const float f = t - (float)i;
+    const float p0 = q[i > 0 ? i - 1 : 0];
+    const float p1 = q[i], p2 = q[i + 1];
+    const float p3 = q[i < kProfN - 2 ? i + 2 : kProfN - 1];
+    return 0.5f * (2.f * p1 + (-p0 + p2) * f +
+                   (2.f * p0 - 5.f * p1 + 4.f * p2 - p3) * f * f +
+                   (-p0 + 3.f * p1 - 3.f * p2 + p3) * f * f * f);
+}
+
+// The squirrel's: a cranium and a muzzle, described by where its outline
+// actually goes.
+Section muzzleSection(float s, const HeadShape& p) {
+    Section c;
+    const float t = clampf(s, 0.f, 1.f);
+    const float len = p.chin - p.crown;
+    c.z = p.zBack + (p.zTip - p.zBack) * t;
+    const float yTop = p.crown + splineAt(p.top, t) * len;
+    c.cy = p.crown + splineAt(p.mouth, t) * len;
+    const float yBot = p.crown + splineAt(p.bot, t) * len;
+    c.ryUp = std::max(0.f, c.cy - yTop);
+    c.ryLo = std::max(0.f, yBot - c.cy);
+    c.rx = p.rxMax * std::max(0.f, splineAt(p.girth, t));
+    c.gape = gapeAt(t, p);
+    return c;
+}
+
+Section sectionAt(float s, const HeadShape& p) { return p.sectionFn(s, p); }
+
 // Countershading: dark along the back, abruptly white underneath, which is
 // the one marking that makes a grey shape read as a shark.
 // Where a point sits down the model: 0 at the top of the skull, 1 at the
 // point of the snout, which is its lowest part.
 float depthAt(float y, const HeadShape& p) {
-    return clampf((y - p.topBack) / std::max(1e-3f, p.cyTip - p.topBack),
-                  0.f, 1.f);
+    // The bottom of the model, which for a cone is its point and for a
+    // muzzled head is the underside of the jaw.
+    const float low = std::max(p.cyTip, p.botBack);
+    return clampf((y - p.topBack) / std::max(1e-3f, low - p.topBack), 0.f, 1.f);
 }
 
 // Countershading, keyed to height down the model rather than to position
@@ -915,22 +972,60 @@ HeadShape squirrelShape(const Head& h) {
     p.crown = h.crownY;
     p.chin = h.chinY;
     const float len = h.chinY - h.crownY;
+    // The outline, in fractions of the head's length below the crown. Read
+    // down a column to see one cross-section: the cranium (left) is tall,
+    // wide and round; the muzzle (right) is a small narrow form that hangs
+    // out below it.
+    //
+    // The muzzle *has* to hang below. Orthographic, head-on, the silhouette
+    // is the union of every cross-section, so anything that stays inside the
+    // biggest one -- the cranium, which has a whole head to cover -- is
+    // simply not visible. A muzzle that only pointed forward would not exist
+    // on screen, which is how the first attempt came out shark-shaped.
+    // A near-round cranium over the first half, then a short blunt muzzle:
+    // small in *both* directions. Letting the top curve dive slowly while the
+    // mouth line ran on ahead gave a tall narrow spike instead of a muzzle.
+    static const float kTop[kProfN]   = {-0.14f, -0.23f, -0.25f, -0.23f,
+                                         -0.16f,  0.04f,  0.44f,  0.78f, 0.92f};
+    static const float kMouth[kProfN] = { 0.74f,  0.74f,  0.74f,  0.75f,
+                                          0.79f,  0.86f,  0.95f,  1.02f, 1.02f};
+    static const float kBot[kProfN]   = { 0.92f,  0.96f,  0.97f,  0.96f,
+                                          0.94f,  0.97f,  1.06f,  1.16f, 1.10f};
+    // Widest at the cheeks and held there, a touch in at the back of the
+    // skull, then stepping hard into the muzzle around s = 0.65.
+    static const float kGirth[kProfN] = { 0.72f,  0.92f,  1.00f,  1.00f,
+                                          0.94f,  0.74f,  0.48f,  0.30f, 0.f};
+    for (int i = 0; i < kProfN; ++i) {
+        p.top[i] = kTop[i];
+        p.mouth[i] = kMouth[i];
+        p.bot[i] = kBot[i];
+        p.girth[i] = kGirth[i];
+    }
+    p.sectionFn = muzzleSection;
     // A squirrel is a round braincase with a short muzzle on the front of it,
     // not a cone: the girth holds most of the way back and then draws out
     // late. The mouth sits low and small, and the muzzle reaches only just
     // past the chin -- far enough to be seen against the head's own outline,
     // which is all the orthographic projection allows, and no further.
     p.e = h.expr;
-    p.cyBack = h.crownY + (0.76f - 0.10f * h.expr.smile + 0.06f * h.expr.frown) * len;
-    p.cyTip = h.chinY + 0.13f * len;
-    p.botBack = h.chinY + 0.14f * len;
-    p.rxMax = h.headHalfW * 1.34f;
-    p.topBack = h.crownY - 0.21f * len;
-    p.sHinge = 0.36f;   // the gape is short and near the front
+    // A smile lifts the corners of the small gape; the muzzle's point does
+    // not move.
+    const float lift = (-0.06f * h.expr.smile + 0.04f * h.expr.frown) * len;
+    for (int i = 0; i < kProfN; ++i)
+        p.mouth[i] += lift * (1.f - (float)i / (kProfN - 1));
+    // Kept for the parts that still read them: the extremes of the outline.
+    // The top of the skull is the *highest* control point, not the first one
+    // -- the outline rises from the back of the head before it falls away.
+    float hi = p.top[0];
+    for (int i = 1; i < kProfN; ++i) hi = std::min(hi, p.top[i]);
+    p.topBack = h.crownY + hi * len;
+    p.cyBack = h.crownY + p.mouth[0] * len;
+    p.cyTip = h.crownY + p.mouth[kProfN - 1] * len;
+    p.botBack = h.crownY + p.bot[0] * len;
+    p.rxMax = h.headHalfW * 1.30f;
+    p.sHinge = 0.62f;   // the gape belongs to the muzzle, not to the cranium
     p.zBack = 1.25f;
-    p.zTip = h.noseZ - 0.55f;
-    p.girthPow = 2.2f; p.girthRoot = 0.50f; p.girthBulge = 0.05f;
-    p.topPow = 2.60f; p.cyPow = 1.60f; p.botPow = 1.30f;
+    p.zTip = h.noseZ - 0.35f;
     p.back = Vec3f(52, 92, 148);     // BGR: chestnut along the back
     p.flank = Vec3f(88, 134, 188);
     p.belly = Vec3f(206, 226, 238);  // cream muzzle, throat and chest
@@ -1085,9 +1180,49 @@ Mesh buildMuzzleTongue(const HeadShape& p) {
                        Vec3f(126, 112, 206));
 }
 
-// A pair of eye beads, set into the flank of a lofted head and squashing to
-// slits as the lids close. `sEye` is how far along the head they sit and
-// `thEye` how far round the cross-section, from the mouth line toward the top.
+// One eye bead, at a given point with a given outward direction, squashing to
+// a slit as its lid closes.
+//
+// Split from the placement because placing an eye by its angle round the
+// cross-section only works where that section is about as tall as it is wide.
+// On a cranium two head-lengths tall the angle that puts an eye at the right
+// height puts it right out on the silhouette, so the squirrel places its eyes
+// by coordinate instead.
+void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
+                const Vec3f& nOut, float R, float side, const Vec3f& col) {
+    const Vec3f u = norm(nOut.cross(Vec3f(0.f, 1.f, 0.f)));
+    const Vec3f v = norm(nOut.cross(u));
+    // Blinking. Squashing the bead to a slit is what reads as an eye closing
+    // at this size -- a shark has a nictitating membrane rather than a lid,
+    // and a squirrel's lid is far too small to model. `side` is -1 for the
+    // image-left eye, which is the one blinkL describes.
+    const float blink = (side < 0.f) ? p.e.blinkL : p.e.blinkR;
+    const float lid = std::max(0.07f, 1.f - blink);
+    const int nSeg = 14, nRing = 6;
+    std::vector<std::vector<int>> ring(nRing);
+    for (int r = 0; r < nRing; ++r) {
+        const float lat = 0.5f * kPi * (float)r / (nRing - 1);
+        const float cr = std::cos(lat) * R, cz = std::sin(lat) * R;
+        for (int i = 0; i < nSeg; ++i) {
+            const float a = 2.f * kPi * i / nSeg;
+            ring[r].push_back(m.add(centre + u * (cr * std::cos(a)) +
+                                        v * (cr * std::sin(a) * lid) +
+                                        nOut * (cz * lid),
+                                    col));
+        }
+    }
+    for (int r = 0; r + 1 < nRing; ++r)
+        for (int i = 0; i < nSeg; ++i) {
+            const int j = (i + 1) % nSeg;
+            m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
+            m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
+        }
+}
+
+// A pair of eye beads set into the flank of a lofted head. `sEye` is how far
+// along the head they sit and `thEye` how far round the cross-section, from
+// the mouth line toward the top -- which suits a head whose sections are not
+// far off round, as the shark's are.
 Mesh buildEyeBeads(const HeadShape& p, float sEye, float thEye, float R,
                    const Vec3f& col, float ambient, float spec, int shin) {
     Mesh m;
@@ -1104,35 +1239,8 @@ Mesh buildEyeBeads(const HeadShape& p, float sEye, float thEye, float R,
         // surface however the head is proportioned.
         const Vec3f nOut = norm(Vec3f(side * std::cos(thEye) / ce.rx,
                                       -std::sin(thEye) / ce.ryUp, -0.25f));
-        Vec3f u = norm(nOut.cross(Vec3f(0.f, 1.f, 0.f)));
-        Vec3f v = norm(nOut.cross(u));
-        // Blinking. Squashing the bead to a slit is what reads as an eye
-        // closing at this size -- a shark has a nictitating membrane rather
-        // than a lid, and a squirrel's lid is far too small to model. `side`
-        // is -1 for the image-left eye, which is the one blinkL describes.
-        const float blink = (side < 0.f) ? p.e.blinkL : p.e.blinkR;
-        const float lid = std::max(0.07f, 1.f - blink);
-        const int nSeg = 14, nRing = 6;
-        std::vector<std::vector<int>> ring(nRing);
-        for (int r = 0; r < nRing; ++r) {
-            const float lat = 0.5f * kPi * (float)r / (nRing - 1);
-            const float cr = std::cos(lat) * R, cz = std::sin(lat) * R;
-            for (int i = 0; i < nSeg; ++i) {
-                const float a = 2.f * kPi * i / nSeg;
-                ring[r].push_back(m.add(centre + u * (cr * std::cos(a)) +
-                                            v * (cr * std::sin(a) * lid) +
-                                            nOut * (cz * lid),
-                                        col));
-            }
-        }
-        for (int r = 0; r + 1 < nRing; ++r)
-            for (int i = 0; i < nSeg; ++i) {
-                const int j = (i + 1) % nSeg;
-                m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
-                m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
-            }
+        addEyeBead(m, p, centre, nOut, R, side, col);
     }
-
     m.computeNormals();
     return m;
 }
@@ -1305,50 +1413,62 @@ void addSquirrelTrim(std::vector<Mesh>& out, const Head& head,
     // the real head inside it, so they are built against a head measured from
     // the shape rather than from the face.
     Head eh = head;
-    eh.crownY = p.topBack + 0.06f * len;
-    // Nearly the model's full half-width: attached further in, the lobes'
-    // bases are buried and they read as stuck on the back of the head.
-    eh.headHalfW = p.rxMax * 0.95f;
+    // Set so the lobes' bases sit just *inside* the cranium's dome and the
+    // ears grow out of the top of it. Wider or higher and they perch above
+    // the head with daylight under them.
+    eh.crownY = p.topBack + 0.16f * len;
+    eh.headHalfW = p.rxMax * 0.82f;
     const float wig = 0.05f * std::sin((float)head.phase * 0.11f) +
                       0.34f * head.expr.browUp - 0.30f * head.expr.browDown;
     out.push_back(buildEar(-1.f, wig, eh, st));
     out.push_back(buildEar(+1.f, wig, eh, st));
 
-    // Big eyes. A squirrel's really are far round the side of its head, but
-    // a filter is watched from the front, so they are brought round toward
-    // the midline far enough that both read as eyes rather than as two beads
-    // on the silhouette.
-    out.push_back(buildEyeBeads(p, 0.34f, 0.82f, 0.19f * p.rxMax,
-                                Vec3f(18, 16, 20), 0.26f, 0.60f, 42));
+    // Big eyes, placed by coordinate: well up the face, set wide, and on the
+    // front of the cranium so both of them read from straight on.
+    {
+        Mesh eyes;
+        eyes.doubleSided = true;
+        eyes.ambient = 0.26f;
+        eyes.spec = 0.60f;
+        eyes.shin = 42;
+        const float R = 0.21f * p.rxMax;
+        for (float side : {-1.f, 1.f}) {
+            const Vec3f c(side * 0.52f * p.rxMax, head.crownY + 0.30f * len,
+                          -0.10f);
+            const Vec3f nOut = norm(Vec3f(side * 0.50f, -0.16f, -0.85f));
+            addEyeBead(eyes, p, c, nOut, R, side, Vec3f(18, 16, 20));
+        }
+        eyes.computeNormals();
+        out.push_back(std::move(eyes));
+    }
 
-    // The nose, on the point of the muzzle, and scaled to the model rather
-    // than to the face inside it.
+    // The nose, a button on the front of the muzzle's point.
     Style ns = st;
-    ns.noseR = 0.21f * p.rxMax;
+    ns.noseR = 0.20f * p.rxMax;
     Head nh = head;
-    nh.noseY = p.cyTip - 0.16f * len;
-    nh.noseZ = p.zTip + 0.06f;
+    nh.noseY = head.crownY + 0.97f * len;
+    nh.noseZ = p.zTip + 0.03f;
     out.push_back(buildNose(nh, ns));
 
-    // Buck teeth, hanging from just under the nose and slightly in front of
-    // the point of the muzzle, so they show with the mouth shut as well as
-    // open -- which is the whole point of them. Placed behind the muzzle's
-    // front face instead, they were simply swallowed by the closed jaw.
-    const float tlen = (0.15f + 0.13f * head.expr.jawOpen) * len;
-    out.push_back(buildIncisors(Vec3f(0.f, p.cyTip - 0.05f * len, p.zTip - 0.03f),
-                                tlen, 0.085f * p.rxMax, 0.055f * p.rxMax,
-                                Vec3f(226, 238, 245)));
+    // Buck teeth, from just under the nose and a shade in front of the
+    // muzzle's face, so they show with the mouth shut as well as open --
+    // which is the whole point of them. Set behind that face they were
+    // simply swallowed by the closed jaw.
+    const float tlen = (0.11f + 0.10f * head.expr.jawOpen) * len;
+    out.push_back(buildIncisors(
+        Vec3f(0.f, head.crownY + 1.03f * len, p.zTip - 0.04f),
+        tlen, 0.075f * p.rxMax, 0.05f * p.rxMax, Vec3f(226, 238, 245)));
 
     // Cheek pouches. Out on the cheeks and flattened against them, in a
     // lighter chestnut than the coat so they read as the head bulging rather
     // than as two pale objects stuck on it. Absent until actually puffed.
     const float puff = clampf(head.expr.cheekPuff, 0.f, 1.f);
     if (puff > 0.04f) {
-        const Section cs = sectionAt(0.62f, p);
+        const Section cs = sectionAt(0.50f, p);
         const float r = (0.16f + 0.26f * puff) * p.rxMax;
         for (float side : {-1.f, 1.f}) {
-            const Vec3f c(side * (cs.rx * 0.82f + 0.10f * r),
-                          cs.cy - 0.18f * cs.ryUp, cs.z);
+            const Vec3f c(side * (cs.rx * 0.74f + 0.10f * r),
+                          head.crownY + 0.80f * len, cs.z - 0.10f);
             out.push_back(buildLobe(c, r, r * 0.84f, r * 0.55f,
                                     Vec3f(120, 168, 214), 0.50f, 0.16f, 16));
         }
@@ -1396,8 +1516,15 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         meshes.push_back(std::move(jaw));
         if (shark) meshes.push_back(std::move(lowTeeth));
         meshes.push_back(std::move(tongue));
-        if (shark) meshes.push_back(buildSharkTrim(sp));
-        else addSquirrelTrim(meshes, head, sp);
+        if (shark) {
+            // The same parameters the eyes had when they lived inside
+            // buildSharkTrim, before the squirrel needed them too.
+            meshes.push_back(buildEyeBeads(sp, 0.34f, 0.52f, 0.140f * sp.rxMax,
+                                           Vec3f(16, 15, 18), 0.30f, 0.55f, 40));
+            meshes.push_back(buildSharkTrim(sp));
+        } else {
+            addSquirrelTrim(meshes, head, sp);
+        }
     } else {
         const Style st = styleFor(species);
         // Ears answer the brows. Raising them pricks the ears up and out,
