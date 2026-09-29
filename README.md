@@ -279,6 +279,7 @@ build/open-lego-camera [options]
   --no-battery                 skip the Waveshare UPS HAT battery gauge
   --battery-hat auto|b|d       which UPS HAT to expect (default: auto-probe)
   --battery-bus N              I2C bus the UPS HAT is on (default: 1)
+  --battery-range EMPTY:FULL   pack volts at 0% and 100% (calibration)
   --battery-shutdown           power off at the pack cut-off (off by default)
   --help                       show this help
 ```
@@ -518,7 +519,7 @@ without a gauge if neither answers:
 | --- | --- | --- |
 | INA219 address | `0x42` | `0x43` |
 | Pack | 2 × 18650 **in series** | 1 × 21700 |
-| Empty → full | 6.0 V → 8.4 V | 3.0 V → 4.2 V |
+| Empty → full | 7.0 V → 8.05 V (measured) | 3.0 V → 4.2 V (Waveshare's) |
 | Shunt / profile | 0.1 Ω, 32 V / 2 A | 0.01 Ω, 16 V / 5 A |
 | Power-path MCU | none | `0x2d` |
 
@@ -541,10 +542,43 @@ Waveshare's own reference driver for that model, so the readings match what its
 table in [`src/battery.cpp`](src/battery.cpp) — adding another INA219-based HAT
 means adding a row, not branching the driver.
 
-Note that the percentage is **estimated from the pack's terminal voltage**, not
-counted in coulombs, so it sags under a heavy load and recovers when the load
-drops; the app smooths it so the number doesn't flicker. Beware that the `(C)`
-HAT uses different values again and is *not* covered here.
+### Calibrating the gauge to your pack
+
+The percentage is **estimated from the pack's terminal voltage**, not counted in
+coulombs, so it sags under a heavy load and recovers when the load drops; the
+app smooths it so the number doesn't flicker.
+
+That also means the endpoints matter, and **Waveshare's are optimistic**. Their
+(B) formula assumes the pack swings the full 3.0–4.2 V per cell at the INA219's
+terminals. It doesn't: the INA219 sits on the *load side* of the shunt, so every
+reading is already down by the shunt drop plus the pack's own sag under load,
+and the board stops delivering 5 V well before the cells are truly flat.
+Measured on this camera, a full pack reads ~8.09 V and the Pi dies at ~6.96 V —
+so the stock 6.0–8.4 V curve showed **87% on a full pack and 40% on a dead
+one**. (Waveshare acknowledge the same skew in their FAQ, suggesting you fudge
+the 6 down to 5.08.) The (B) default here is therefore the measured 7.0–8.05 V.
+
+Your pack, cells and load will differ. To calibrate:
+
+1. Charge fully, then run the camera on battery and note the voltage the app
+   logs at startup — that's your **FULL**, minus a little headroom.
+2. Run it flat and note the last voltage before it dies — that's your **EMPTY**.
+3. Pass them back:
+
+```bash
+build/open-lego-camera --battery-range 7:8.05
+```
+
+The startup line shows the range in use, so you can confirm it took:
+
+```
+battery: Waveshare UPS HAT (B) @ /dev/i2c-1 0x42 (7.00-8.05 V)
+```
+
+The low-battery warning and the `--battery-shutdown` cut-off are both derived
+from this range (the cut-off sits at 12.5% of it, which on the (D) works out to
+exactly the 3.15 V Waveshare use), so recalibrating moves them with it instead
+of stranding a threshold outside the new window.
 
 Useful flags:
 
@@ -552,17 +586,18 @@ Useful flags:
   Handy if something else on the bus answers at `0x42`/`0x43`.
 - `--battery-bus N` — the HAT is on a bus other than `/dev/i2c-1`.
 - `--no-battery` — skip the probe entirely.
+- `--battery-range EMPTY:FULL` — calibrate the curve to your pack (above).
 - `--battery-shutdown` — **opt-in**: when the pack stays below its cut-off
-  (**6.3 V** on the (B), **3.15 V** on the (D)) for a minute while off charge,
-  show `BATTERY EMPTY`, then halt. Without this flag the app only ever *reports*
-  the level. On the (D) it first asks the power-path MCU to boot the Pi again by
-  itself once the pack recovers (register `0x01` ← `0x55` at `0x2d`); the (B)
-  has no such MCU, so it stays off until you press its button. The shutdown runs
-  `sudo -n poweroff`, so it needs passwordless sudo (the default for the `pi`
-  user) or root.
+  (12.5% of the range: **7.13 V** on the (B), **3.15 V** on the (D)) for a
+  minute while off charge, show `BATTERY EMPTY`, then halt. Without this flag
+  the app only ever *reports* the level. On the (D) it first asks the power-path
+  MCU to boot the Pi again by itself once the pack recovers (register `0x01` ←
+  `0x55` at `0x2d`); the (B) has no such MCU, so it stays off until you press
+  its button. The shutdown runs `sudo -n poweroff`, so it needs passwordless
+  sudo (the default for the `pi` user) or root.
 
-> Waveshare ship no low-voltage shutdown for the (B), so its 6.3 V cut-off is
-> this project's own choice — the same 3.15 V per cell the (D) uses.
+> Waveshare ship no low-voltage shutdown for the (B) at all, so its cut-off is
+> this project's own, derived from the measured range above.
 
 > The KiCad [CM4 carrier board](hardware/README.md) in this repo takes a
 > different route — an on-board **MAX17048** fuel gauge — which this code does

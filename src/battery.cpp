@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 
@@ -32,9 +33,8 @@ struct BatteryBoard {
     double currentLsbA;        // A per current-register bit
     double powerLsbW;          // W per power-register bit
     bool dischargePositive;    // raw current reads + while discharging
-    double emptyV, fullV;      // pack voltage curve, 0% -> 100%
+    double emptyV, fullV;      // default pack voltage curve, 0% -> 100%
     double presentV;           // below this: no pack, or the ADC hasn't settled
-    double cutoffV;            // --battery-shutdown threshold
 };
 
 namespace {
@@ -53,6 +53,12 @@ constexpr double kBusLsbV = 0.004; // V per bus-register bit (15..3)
 // Current above which the pack counts as charging rather than merely idle.
 constexpr double kChargingA = 0.05;
 
+// Where the low-voltage cut-off sits within the pack's range. Waveshare put
+// the (D)'s at 3.15 V on a 3.0-4.2 V cell, which is this fraction of it;
+// deriving it keeps the cut-off meaningful after --battery-range moves the
+// endpoints, instead of stranding an absolute voltage outside the new window.
+constexpr double kCutoffFraction = 0.125;
+
 // How long the pack must stay under the cut-off, off charge, before the app
 // treats it as critical.
 constexpr auto kCutoffGrace = std::chrono::seconds(60);
@@ -67,21 +73,33 @@ constexpr double kSmoothing = 0.25;
 // The supported boards, probed in this order when --battery-hat is auto. Their
 // INA219s sit at different addresses, so the probe is unambiguous.
 constexpr BatteryBoard kBoards[] = {
-    // UPS HAT (B): 2x 18650 in series (6.0-8.4 V), 0.1 ohm shunt, 32 V / 2 A
-    // profile (cal 4096, 100 uA per bit). Its demo prints the raw current
-    // as-is, with negative meaning discharge, so the polarity already matches
-    // our convention. There is no power-path MCU on this board, and Waveshare
-    // ship no low-voltage shutdown for it -- the 6.3 V cut-off below is ours,
-    // picked as the same 3.15 V per cell the (D) uses.
+    // UPS HAT (B): 2x 18650 in series, 0.1 ohm shunt, 32 V / 2 A profile
+    // (cal 4096, 100 uA per bit). Its demo prints the raw current as-is, with
+    // negative meaning discharge, so the polarity already matches ours. There
+    // is no power-path MCU on this board.
+    //
+    // The 7.0-8.05 V range is *not* Waveshare's 6.0-8.4 V. Theirs assumes the
+    // pack swings the full 3.0-4.2 V per cell at the INA219's terminals, and
+    // it does not: the INA219 sits on the load side of a 0.1 ohm shunt, so
+    // every reading is already down by the shunt drop plus the pack's own sag
+    // under the camera's draw, and the board stops delivering 5 V well before
+    // the cells are actually flat. Measured on this build, a full pack reads
+    // ~8.09 V and the Pi dies at ~6.96 V -- which is why the stock formula
+    // showed 87% on a full pack and 40% on a dead one. Waveshare acknowledge
+    // the same skew in their FAQ (they suggest fudging the 6 down to 5.08).
+    // These endpoints suit this camera; --battery-range recalibrates them for
+    // a different pack or load.
     {UpsHat::B, "UPS HAT (B)", 0x42, 0x00, 0x3EEF, 4096, 0.0001, 0.002, false,
-     6.0, 8.4, 4.0, 6.3},
+     7.0, 8.05, 4.0},
 
-    // UPS HAT (D): one 21700 cell (3.0-4.2 V), 0.01 ohm shunt sized for the
-    // board's 5 A output, 16 V / 5 A profile (cal 26868, 152.4 uA per bit).
-    // Its demo negates the current register, so discharge reads positive here.
-    // 0x2D is the MCU that owns the power path.
+    // UPS HAT (D): one 21700 cell, 0.01 ohm shunt sized for the board's 5 A
+    // output, 16 V / 5 A profile (cal 26868, 152.4 uA per bit). Its demo
+    // negates the current register, so discharge reads positive here. 0x2D is
+    // the MCU that owns the power path. The 3.0-4.2 V range is Waveshare's own
+    // and is left alone -- their demo shuts down at 3.15 V, so these boards do
+    // run the cell that far down; it has not been re-measured here.
     {UpsHat::D, "UPS HAT (D)", 0x43, 0x2D, 0x0EEF, 26868, 0.0001524, 0.003048,
-     true, 3.0, 4.2, 2.0, 3.15},
+     true, 3.0, 4.2, 2.0},
 };
 
 // Reinterpret a raw register as the two's-complement value the INA219 reports
@@ -209,8 +227,15 @@ std::unique_ptr<Battery> Battery::open(const Config& cfg) {
         return nullptr;
     }
 
+    // Pack curve: the board's measured default unless the user calibrated it.
+    b->emptyV_ = cfg.batteryEmptyV > 0.0 ? cfg.batteryEmptyV : b->board_->emptyV;
+    b->fullV_ = cfg.batteryFullV > 0.0 ? cfg.batteryFullV : b->board_->fullV;
+    b->cutoffV_ = b->emptyV_ + kCutoffFraction * (b->fullV_ - b->emptyV_);
+
+    char range[48];
+    std::snprintf(range, sizeof(range), " (%.2f-%.2f V)", b->emptyV_, b->fullV_);
     b->desc_ = std::string("Waveshare ") + b->board_->name + " @ " + path +
-               " " + hex8(b->board_->inaAddr);
+               " " + hex8(b->board_->inaAddr) + range;
     b->sample(); // seed the smoothed voltage so the first frame shows a level
     b->lastPoll_ = Clock::now();
     return b;
@@ -251,7 +276,7 @@ bool Battery::sample() {
                      ? volts
                      : smoothedV_ + kSmoothing * (volts - smoothedV_);
 
-    double pct = (smoothedV_ - board.emptyV) / (board.fullV - board.emptyV) * 100.0;
+    double pct = (smoothedV_ - emptyV_) / (fullV_ - emptyV_) * 100.0;
 
     st_.valid = true;
     st_.volts = volts;
@@ -307,9 +332,7 @@ void Battery::poll() {
     // Track how long the pack has been under the cut-off while off charge. A
     // single dip during a capture burst is normal, so only a sustained low
     // reading counts as critical.
-    // A successful sample() guarantees a board was adopted.
-    const double cutoff = board_->cutoffV;
-    const bool under = st_.volts < cutoff && !st_.charging;
+    const bool under = st_.volts < cutoffV_ && !st_.charging;
     if (under) {
         if (!low_) {
             low_ = true;
@@ -324,7 +347,7 @@ void Battery::poll() {
         auto left = std::chrono::duration_cast<std::chrono::seconds>(
                         kCutoffGrace - (now - lowSince_))
                         .count();
-        std::cerr << "battery: " << st_.volts << " V is below the " << cutoff
+        std::cerr << "battery: " << st_.volts << " V is below the " << cutoffV_
                   << " V cut-off; powering off in " << left
                   << " s unless charged\n";
     }

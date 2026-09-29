@@ -74,6 +74,8 @@ static void printUsage(const char* prog) {
         "  --battery-hat auto|b|d       which UPS HAT to expect: (B) at 0x42\n"
         "                               or (D) at 0x43 (default: auto-probe)\n"
         "  --battery-bus N              I2C bus the UPS HAT is on (default: 1)\n"
+        "  --battery-range EMPTY:FULL   pack volts at 0% and 100%, to calibrate\n"
+        "                               the gauge to your own pack (e.g. 7:8.05)\n"
         "  --battery-shutdown           power the Pi off when the pack reaches\n"
         "                               its cut-off voltage (off by default)\n"
         "  --help                       show this help\n";
@@ -90,6 +92,21 @@ static bool parseSize(const std::string& s, int& w, int& h) {
         return false;
     }
     return w > 0 && h > 0;
+}
+
+// Parse "EMPTY:FULL" volts for --battery-range. Both must be positive and in
+// order; anything else is a typo worth rejecting rather than silently building
+// a nonsense gauge (a reversed pair would count backwards).
+static bool parseRange(const std::string& s, double& empty, double& full) {
+    auto c = s.find(':');
+    if (c == std::string::npos) return false;
+    try {
+        empty = std::stod(s.substr(0, c));
+        full = std::stod(s.substr(c + 1));
+    } catch (...) {
+        return false;
+    }
+    return empty > 0.0 && full > empty;
 }
 
 bool parseArgs(int argc, char** argv, Config& out, int* exitCode) {
@@ -175,6 +192,13 @@ bool parseArgs(int argc, char** argv, Config& out, int* exitCode) {
             else if (!std::strcmp(v, "d") || !std::strcmp(v, "D")) out.batteryHat = UpsHat::D;
             else {
                 std::cerr << "bad --battery-hat (auto|b|d): " << v << "\n";
+                *exitCode = 2; return false;
+            }
+        } else if (a == "--battery-range") {
+            const char* v = need(i); if (!v) return false;
+            if (!parseRange(v, out.batteryEmptyV, out.batteryFullV)) {
+                std::cerr << "bad --battery-range (expected EMPTY:FULL volts, "
+                             "empty below full): " << v << "\n";
                 *exitCode = 2; return false;
             }
         } else if (a == "--battery-bus") {

@@ -29,6 +29,10 @@ struct Config {
     bool battery = true;     // look for a Waveshare UPS HAT battery gauge
     UpsHat batteryHat = UpsHat::Auto; // which model, or probe for either
     int batteryBus = 1;      // /dev/i2c-N the HAT sits on
+    // Pack voltage at 0% / 100%, overriding the HAT's default curve. Both 0
+    // means "use the board default" (see --battery-range).
+    double batteryEmptyV = 0.0;
+    double batteryFullV = 0.0;
     bool batteryShutdown = false; // power off when the pack reaches the cut-off
 };
 

@@ -88,6 +88,10 @@ private:
     std::string desc_;
     bool shutdownEnabled_ = false;
 
+    // The pack voltage curve actually in use: the board's defaults unless
+    // --battery-range overrode them. cutoffV_ is derived from the two.
+    double emptyV_ = 0.0, fullV_ = 0.0, cutoffV_ = 0.0;
+
     BatteryStatus st_;
     double smoothedV_ = 0.0;   // EMA of the bus voltage (load sags are spiky)
     bool critical_ = false;
