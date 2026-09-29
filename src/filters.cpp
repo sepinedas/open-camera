@@ -711,6 +711,10 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
             return mirrored ? std::make_pair(subjLeft, subjRight)
                             : std::make_pair(subjRight, subjLeft);
         };
+        auto ordered2 = [&](float subjRight, float subjLeft) {
+            return mirrored ? std::make_pair(subjLeft, subjRight)
+                            : std::make_pair(subjRight, subjLeft);
+        };
         std::tie(f.eyeL, f.eyeR) = ordered(eyeSubjR, eyeSubjL);
         std::tie(f.mouthL, f.mouthR) = ordered(P(kMouthR), P(kMouthL));
         std::tie(f.browL, f.browR) = ordered(P(kBrowInnerR), P(kBrowInnerL));
@@ -738,17 +742,77 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
         f.right = eyeVec * (1.f / eyeSep);
         f.down = cv::Point2f(-f.right.y, f.right.x);
 
-        // Expression. The blendshape head reads the mouth straight off the
-        // mesh; without it, fall back to the inner-lip gap.
-        float jaw = blendshape(*result, i, "jawOpen");
+        // --- Expression -------------------------------------------------
+        // Blendshape scores where the bundle has the head for them, and a
+        // measurement off the mesh where one is both possible and better.
+        auto bs = [&](const char* name) { return blendshape(*result, i, name); };
+        // Average of a subject-left/right pair, or -1 if either is missing.
+        auto bsPair = [&](const char* l, const char* r) {
+            const float a = bs(l), b = bs(r);
+            return (a >= 0.f && b >= 0.f) ? 0.5f * (a + b) : -1.f;
+        };
+        // A subject-side pair put into image order, like the landmarks above.
+        auto bsSides = [&](const char* subjL, const char* subjR) {
+            const float a = bs(subjL), b = bs(subjR);
+            if (a < 0.f || b < 0.f) return std::make_pair(-1.f, -1.f);
+            return mirrored ? std::make_pair(a, b) : std::make_pair(b, a);
+        };
+
+        Expression& e = f.expr;
+
+        float jaw = bs("jawOpen");
         if (jaw < 0.f) {
             const float mouthW = len(f.mouthR - f.mouthL);
             jaw = mouthW > 1e-3f ? len(f.lipBot - f.lipTop) / (0.45f * mouthW) : 0.f;
         }
-        f.open = clamp01(jaw);
-        const float sl = blendshape(*result, i, "mouthSmileLeft");
-        const float sr = blendshape(*result, i, "mouthSmileRight");
-        f.smile = (sl >= 0.f && sr >= 0.f) ? clamp01(0.5f * (sl + sr)) : 0.f;
+        e.jawOpen = clamp01(jaw);
+
+        const float sm = bsPair("mouthSmileLeft", "mouthSmileRight");
+        e.smile = sm >= 0.f ? clamp01(sm) : 0.f;
+        const float fr = bsPair("mouthFrownLeft", "mouthFrownRight");
+        e.frown = fr >= 0.f ? clamp01(fr) : 0.f;
+
+        // Eyelids. Preferred from the mesh rather than from a blendshape:
+        // the aperture is just the gap between the lid landmarks over the
+        // eye's own width, which costs nothing, works without the blendshape
+        // head, and does not wobble the way the predicted score does.
+        auto aperture = [&](int up, int low, int outer, int inner) {
+            const float w = len(P(outer) - P(inner));
+            if (w < 1e-3f) return 1.f;
+            const float ratio = len(P(up) - P(low)) / w;
+            // ~0.30 of the width wide open, ~0.06 shut.
+            return clamp01((0.28f - ratio) / 0.20f);
+        };
+        const float blinkSubjR = aperture(kEyeRUp, kEyeRLow, kEyeROuter, kEyeRInner);
+        const float blinkSubjL = aperture(kEyeLUp, kEyeLLow, kEyeLOuter, kEyeLInner);
+        std::tie(e.blinkL, e.blinkR) = ordered2(blinkSubjR, blinkSubjL);
+
+        const float bUpInner = bs("browInnerUp");
+        const float bUpOuter = bsPair("browOuterUpLeft", "browOuterUpRight");
+        if (bUpInner >= 0.f || bUpOuter >= 0.f)
+            e.browUp = clamp01(0.5f * std::max(0.f, bUpInner) +
+                               0.5f * std::max(0.f, bUpOuter));
+        const float bDown = bsPair("browDownLeft", "browDownRight");
+        e.browDown = bDown >= 0.f ? clamp01(bDown) : 0.f;
+
+        const float pk = bs("mouthPucker");
+        e.pucker = pk >= 0.f ? clamp01(pk) : 0.f;
+        const float cp = bs("cheekPuff");
+        e.cheekPuff = cp >= 0.f ? clamp01(cp) : 0.f;
+
+        // tongueOut is in MediaPipe's blendshape set but the model rarely
+        // scores it above the noise floor, so treat it as a bonus rather than
+        // something to build on: everything driven by it degrades to simply
+        // not happening.
+        const float tg = bs("tongueOut");
+        e.tongue = tg >= 0.f ? clamp01(tg) : 0.f;
+
+        // jawLeft/jawRight are the subject's; signed into image terms.
+        const float jl = bs("jawLeft"), jr = bs("jawRight");
+        if (jl >= 0.f && jr >= 0.f) {
+            const float subj = clamp01(jl) - clamp01(jr);
+            e.jawSide = mirrored ? subj : -subj;
+        }
 
         faces_.push_back(std::move(f));
     }
@@ -912,10 +976,10 @@ void FaceFilter::applySmile(cv::Mat& frame, const Face& f, cv::Point2f off) cons
 
     // A mouth that is already grinning needs less help; stacking a full-strength
     // grin on top of a real one is what makes this kind of filter look rubbery.
-    const float damp = 1.f - 0.35f * f.smile;
+    const float damp = 1.f - 0.35f * f.expr.smile;
     const float outX = 0.28f * mw * damp;                // corners pull outward
     const float upY = 0.17f * mw * damp;                 // ...and upward
-    const float openY = (0.055f + 0.165f * f.open) * mw; // vertical stretch
+    const float openY = (0.055f + 0.165f * f.expr.jawOpen) * mw; // vertical stretch
 
     std::vector<cv::Point2f> src, dst;
     std::vector<float> sig;
@@ -938,7 +1002,7 @@ void FaceFilter::applySmile(cv::Mat& frame, const Face& f, cv::Point2f off) cons
     const cv::Point2f mid = (dstL + dstR) * 0.5f;
     const cv::Point2f half = (dstR - dstL) * 0.35f;
     whitenTeeth(frame, mid - half, mid + half, dstTop, dstBot,
-                0.30f + 0.50f * f.open);
+                0.30f + 0.50f * f.expr.jawOpen);
 }
 
 void FaceFilter::drawTears(cv::Mat& frame, const Face& f, cv::Point2f off,
@@ -1127,8 +1191,7 @@ bool FaceFilter::headFromFace(const Face& f, cv::Point2f off, double phase,
 
     // Expression. The warps read these too; a model that replaces the head
     // needs them or it is a mask sitting on a face rather than worn by one.
-    h.open = f.open;
-    h.smile = f.smile;
+    h.expr = f.expr;
     return true;
 }
 

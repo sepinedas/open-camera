@@ -2,6 +2,8 @@
 
 #include <opencv2/core.hpp>
 
+#include "types.hpp"
+
 // Three-dimensional ears and muzzles for the face-paint filters.
 //
 // Their *markings* are painted onto the MediaPipe face mesh (see
@@ -53,11 +55,11 @@ struct Head {
                              // which is sized to the whole head rather than
                              // hung off one feature of it.
 
-    // Expression, straight from the mesh's blendshapes. A model that replaces
-    // the head has to move with the face or it is a mask sitting on top of
-    // one: the shark's jaw is driven by `open`.
-    float open = 0.f;   // 0..1, how far the jaw is open
-    float smile = 0.f;  // 0..1, how much the mouth already grins
+    // What the face is doing. A model that replaces the head has to move with
+    // the face or it is a mask sitting on top of one, so the shark works its
+    // jaw, narrows its eyes, curls its gape and puts its tongue out from
+    // these; the animals tilt their ears and loll a tongue.
+    Expression expr;
 
     double phase = 0.0; // free-running frame counter; drives the ear wiggle
 };

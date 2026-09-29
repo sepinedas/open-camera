@@ -4,6 +4,30 @@
 
 namespace olc {
 
+// What the face is doing, each 0..1 unless noted.
+//
+// Taken from MediaPipe's blendshapes, which are the ARKit-style set, with a
+// measurement off the mesh as a fallback where one is reliable -- eyelid
+// aperture is a distance between two landmarks and needs no model to read,
+// and a bundle without the blendshape head is still usable that way.
+//
+// Sides are the IMAGE's, not the subject's: MediaPipe labels by anatomy, so
+// which of them lands on screen-left depends on whether the preview is
+// mirrored, and detect() settles that once for every pair.
+struct Expression {
+    float jawOpen = 0.f;
+    float smile = 0.f;    // corners pulled up and back
+    float frown = 0.f;    // and down
+    float blinkL = 0.f;   // 1 = shut. Image-left eye
+    float blinkR = 0.f;
+    float browUp = 0.f;   // raised, inner and outer together
+    float browDown = 0.f; // lowered: the scowl
+    float pucker = 0.f;   // lips pushed forward
+    float cheekPuff = 0.f;
+    float tongue = 0.f;   // see the note on tongueOut in filters.cpp
+    float jawSide = 0.f;  // -1 fully image-left, +1 fully image-right
+};
+
 // The high-level screen the app is currently on.
 enum class Mode {
     Welcome,       // start screen: Lego-brick camera + Start / Sleep options

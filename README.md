@@ -376,6 +376,37 @@ extent now, rather than padding the face box by margins measured from a sweep
 of poses. That was sizing every frame's colour conversion for the worst case
 — and left any pose outside the sweep free to be clipped.
 
+### What the filters read off your face
+
+MediaPipe's Face Landmarker returns the ARKit-style set of 52 blendshape
+scores alongside the mesh. `Expression` (in `types.hpp`) carries the ones the
+filters use from `detect()` through to the models, so a rigid 3D model can act
+rather than just sit on the face:
+
+| | driven by | what it does |
+|---|---|---|
+| jaw | `jawOpen` | the shark's jaw hinges; the warps stretch the mouth |
+| smile / frown | `mouthSmile*`, `mouthFrown*` | lifts or drops the corners of the shark's gape, curling the whole mouth line |
+| blink | **eyelid landmarks**, not a blendshape | the shark's eyes squash to slits |
+| brows | `browInnerUp`, `browOuterUp*`, `browDown*` | the animals prick their ears up, or lay them back |
+| tongue | `tongueOut`, and the jaw | a tongue comes out — the shark's along the floor of its jaw, the animals' out of the muzzle |
+| jaw sideways | `jawLeft` / `jawRight` | slides the shark's lower jaw, teeth and tongue as one group |
+
+Three things are worth knowing about how these are read:
+
+- **Sides are the image's, not the subject's.** MediaPipe labels by anatomy,
+  so which eye is on screen-left depends on whether the preview is mirrored.
+  `detect()` settles that once from the eyes and puts every pair — landmarks
+  and blendshapes alike — into screen order.
+- **Blink comes from the mesh, not the blendshape.** Eyelid aperture is just
+  the gap between two landmarks over the eye's own width. That costs nothing,
+  works on a bundle with no blendshape head at all, and does not wobble the
+  way the predicted score does.
+- **`tongueOut` is unreliable.** It is in MediaPipe's output, but the model
+  seldom scores it above its noise floor, so nothing is built on it alone: the
+  tongue also comes out when the jaw is simply open, which is true of a real
+  mouth and always fires.
+
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
 

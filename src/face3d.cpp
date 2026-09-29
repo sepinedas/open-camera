@@ -85,6 +85,7 @@ struct Style {
     float snoutFlat; // pig: disc height / width
     float snoutDrop; // pig: how far the axis tilts down as it comes forward
     Vec3f noseCol, snoutCol, nostrilCol;
+    Vec3f tongueCol;
 };
 
 Style styleFor(Species sp) {
@@ -112,6 +113,7 @@ Style styleFor(Species sp) {
         s.nostrilDepth = 0.30f;
         s.noseCol = Vec3f(30, 28, 28);
         s.nostrilCol = Vec3f(10, 9, 9);
+        s.tongueCol = Vec3f(122, 108, 206);
     } else if (sp == Species::Grinch) {
         // Big pointed ears swept up and well out to the sides -- the most
         // far-reaching geometry of any species here, which is what sets the
@@ -137,6 +139,7 @@ Style styleFor(Species sp) {
         s.nostrilRx = 0.26f; s.nostrilRy = 0.34f;
         s.nostrilDepth = 0.26f;
         s.nostrilCol = Vec3f(46, 104, 62);
+        s.tongueCol = Vec3f(112, 104, 192);
         // Taller than wide and slid up the bridge: an upturned snub, not the
         // squat leather pad a dog wears. Lit as skin, so it stays part of the
         // face rather than sitting on it as a dark bead.
@@ -170,6 +173,7 @@ Style styleFor(Species sp) {
         s.nostrilDepth = 0.23f;
         s.snoutCol = Vec3f(178, 160, 242);
         s.nostrilCol = Vec3f(74, 54, 122);
+        s.tongueCol = Vec3f(134, 116, 214);
     }
     return s;
 }
@@ -580,6 +584,63 @@ Mesh buildSnout(const Head& h, const Style& st) {
 }
 
 
+// A tongue: a flattened slab swept from `base` toward `tip`, rounded off at
+// the end and given a little thickness, so it reads from the side as well as
+// head-on. Shared -- a shark's lolls out of its jaw, a dog's out of its
+// muzzle, and only the placement differs.
+Mesh buildTongue(const Vec3f& base, const Vec3f& tip, float halfW,
+                 float thick, float curl, const Vec3f& col) {
+    Mesh m;
+    m.doubleSided = true; // small, and not worth reasoning about winding for
+    m.ambient = 0.52f;
+    m.spec = 0.34f;
+    m.shin = 20.f;
+
+    const Vec3f axis = tip - base;
+    const float L = std::sqrt(axis.dot(axis));
+    if (L < 1e-3f) return m;
+    const Vec3f u = axis * (1.f / L);
+    // Across the tongue, kept spread on screen rather than into it.
+    Vec3f across = norm(Vec3f(0.f, 0.f, -1.f).cross(u));
+    if (std::fabs(across.dot(across)) < 1e-6f) across = Vec3f(1.f, 0.f, 0.f);
+    const Vec3f up = norm(across.cross(u));
+
+    const int nT = 12, nA = 9;
+    std::vector<std::vector<int>> top(nT), bot(nT);
+    for (int ti = 0; ti < nT; ++ti) {
+        const float t = (float)ti / (nT - 1);
+        // Broad at the root, rounding to a blunt point.
+        const float w = halfW * std::sqrt(std::max(0.f, 1.f - t * t * t * 0.92f));
+        // Curls toward the end, as a lolling tongue does. Which way depends
+        // on where it is hanging from, so the caller decides the sign.
+        const Vec3f c = base + u * (L * t) + up * (curl * L * t * t);
+        const float th = thick * (1.f - 0.45f * t);
+        // Darker down the centre groove, lighter at the edges.
+        for (int ai = 0; ai < nA; ++ai) {
+            const float a = -1.f + 2.f * (float)ai / (nA - 1);
+            const float dome = std::sqrt(std::max(0.f, 1.f - a * a));
+            const Vec3f mid = c + across * (w * a);
+            const Vec3f cc = col * (0.86f + 0.20f * std::fabs(a));
+            top[ti].push_back(m.add(mid - up * (th * dome), cc));
+            bot[ti].push_back(m.add(mid + up * (th * dome * 0.65f), col * 0.72f));
+        }
+    }
+    for (int ti = 0; ti + 1 < nT; ++ti)
+        for (int ai = 0; ai + 1 < nA; ++ai) {
+            m.face(top[ti][ai], top[ti][ai + 1], top[ti + 1][ai + 1]);
+            m.face(top[ti][ai], top[ti + 1][ai + 1], top[ti + 1][ai]);
+            m.face(bot[ti][ai], bot[ti + 1][ai + 1], bot[ti][ai + 1]);
+            m.face(bot[ti][ai], bot[ti + 1][ai], bot[ti + 1][ai + 1]);
+        }
+    for (int ti = 0; ti + 1 < nT; ++ti)
+        for (int ai : {0, nA - 1}) {
+            m.face(top[ti][ai], bot[ti][ai], bot[ti + 1][ai]);
+            m.face(top[ti][ai], bot[ti + 1][ai], top[ti + 1][ai]);
+        }
+    m.computeNormals();
+    return m;
+}
+
 // --- Shark -----------------------------------------------------------------
 // Not a set of parts hung over a painted face: a whole head, built to the
 // measured size of the real one and lofted along its own axis. Everything is
@@ -607,6 +668,7 @@ struct SharkProfile {
     float rxMax;
     float sHinge;          // where the jaw parts company with the skull
     float zBack, zTip;
+    Expression e;          // what the face wearing it is doing
 };
 
 SharkProfile sharkProfile(const Head& h) {
@@ -617,7 +679,12 @@ SharkProfile sharkProfile(const Head& h) {
     // Corners of the gape a little below the eye line, near a real mouth's;
     // the point of the snout well below the chin, so the wedge of it clears
     // the head's own outline and can be seen.
-    p.cyBack = h.crownY + 0.56f * len;
+    p.e = h.expr;
+    // A smile lifts the corners of the gape without moving the point of the
+    // snout, which curls the whole mouth line upward -- the same shape change
+    // a person's mouth makes, read off mouthSmile and applied to a jaw that
+    // has no muscles of its own.
+    p.cyBack = h.crownY + (0.56f - 0.14f * h.expr.smile + 0.08f * h.expr.frown) * len;
     p.cyTip = h.chinY + 0.34f * len;
     p.botBack = h.chinY + 0.12f * len;
     p.rxMax = h.headHalfW * 1.40f;
@@ -831,6 +898,22 @@ Mesh buildSharkTeeth(const SharkProfile& p, bool upper) {
 
 // The eyes: small black beads set into the flank, and the dorsal fin, which is
 // the other half of what makes the silhouette read as a shark at a glance.
+// Lies along the floor of the jaw and slides forward out of the mouth. Built
+// in the jaw's frame and rotated with it, so it swings down when the jaw does
+// instead of hanging in the air where the mouth used to be.
+Mesh buildSharkTongue(const SharkProfile& p) {
+    const float s0 = p.sHinge + 0.10f;
+    const SharkSection a = sharkSection(s0, p);
+    // Out past the teeth only as far as the tongue is actually out, and only
+    // when there is a gap for it to come through.
+    const float reach = 0.45f + 0.95f * p.e.tongue * (0.35f + 0.65f * p.e.jawOpen);
+    const Vec3f base(0.f, a.cy, a.z);
+    const Vec3f far(0.f, p.cyTip, p.zTip);
+    const Vec3f tip = base + (far - base) * reach;
+    return buildTongue(base, tip, 0.66f * a.rx, 0.10f * a.rx, 0.16f,
+                       Vec3f(126, 112, 206));
+}
+
 Mesh buildSharkTrim(const SharkProfile& p) {
     Mesh m;
     m.doubleSided = true;
@@ -851,6 +934,12 @@ Mesh buildSharkTrim(const SharkProfile& p) {
         Vec3f u = norm(nOut.cross(Vec3f(0.f, 1.f, 0.f)));
         Vec3f v = norm(nOut.cross(u));
         const float R = 0.140f * p.rxMax;
+        // Blinking. A shark has a nictitating membrane rather than a lid, and
+        // either way a bead this small cannot show one: squashing the bead to
+        // a slit is what reads as an eye closing at this size. `side` is -1
+        // for the image-left eye, which is the one blinkL describes.
+        const float blink = (side < 0.f) ? p.e.blinkL : p.e.blinkR;
+        const float lid = std::max(0.07f, 1.f - blink);
         const int nSeg = 14, nRing = 6;
         std::vector<std::vector<int>> ring(nRing);
         for (int r = 0; r < nRing; ++r) {
@@ -859,7 +948,8 @@ Mesh buildSharkTrim(const SharkProfile& p) {
             for (int i = 0; i < nSeg; ++i) {
                 const float a = 2.f * kPi * i / nSeg;
                 ring[r].push_back(m.add(centre + u * (cr * std::cos(a)) +
-                                            v * (cr * std::sin(a)) + nOut * cz,
+                                            v * (cr * std::sin(a) * lid) +
+                                            nOut * (cz * lid),
                                         Vec3f(16, 15, 18)));
             }
         }
@@ -1027,7 +1117,7 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         const SharkProfile sp = sharkProfile(head);
         // A little always ajar, so the teeth show even with the mouth shut,
         // then opened the rest of the way by the jawOpen blendshape.
-        const float ang = 0.07f + 0.34f * clampf(head.open, 0.f, 1.f);
+        const float ang = 0.07f + 0.34f * clampf(head.expr.jawOpen, 0.f, 1.f);
         const SharkSection hinge = sharkSection(sp.sHinge, sp);
         const Vec3f pivot(0.f, hinge.cy, hinge.z);
         // +x is the head's right, so a positive rotation about it swings
@@ -1038,22 +1128,50 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         meshes.push_back(buildSharkTeeth(sp, true));
         Mesh jaw = buildSharkHalf(sp, false);
         Mesh lowTeeth = buildSharkTeeth(sp, false);
-        for (Mesh* j : {&jaw, &lowTeeth}) {
-            for (auto& q : j->pos) q = rotAbout(Rj, q, pivot);
+        Mesh tongue = buildSharkTongue(sp);
+        // The jaw, its teeth and the tongue are one group: they hinge
+        // together, and slide together when the jaw is worked to one side.
+        const float slide = 0.22f * head.expr.jawSide * sp.rxMax;
+        for (Mesh* j : {&jaw, &lowTeeth, &tongue}) {
+            for (auto& q : j->pos) {
+                q = rotAbout(Rj, q, pivot);
+                q[0] += slide;
+            }
             j->computeNormals();
         }
         meshes.push_back(std::move(jaw));
         meshes.push_back(std::move(lowTeeth));
+        meshes.push_back(std::move(tongue));
         meshes.push_back(buildSharkTrim(sp));
     } else {
         const Style st = styleFor(species);
-        const float wig = 0.05f * std::sin((float)head.phase * 0.11f);
+        // Ears answer the brows. Raising them pricks the ears up and out,
+        // lowering them lays them back -- the same thing the animal would do,
+        // and the clearest way for a rigid part to show an expression that
+        // otherwise only the painted face carries.
+        const float wig = 0.05f * std::sin((float)head.phase * 0.11f) +
+                          0.34f * head.expr.browUp - 0.30f * head.expr.browDown;
         meshes.push_back(buildEar(-1.f, wig, head, st));
         meshes.push_back(buildEar(+1.f, wig, head, st));
         if (st.snout) {
             meshes.push_back(buildSnout(head, st));
         } else {
             meshes.push_back(buildNose(head, st));
+        }
+        // A tongue, out of the mouth. Driven by tongueOut where the model
+        // scores it, and otherwise by the jaw simply being open -- which is
+        // both true of a real mouth and the only thing that reliably fires,
+        // since MediaPipe's tongueOut seldom rises above its noise floor.
+        const float tOut = std::max(head.expr.tongue, 0.55f * head.expr.jawOpen);
+        if (tOut > 0.02f) {
+            const float drop = head.chinY - head.noseY;
+            const float mouthY = head.noseY + 0.42f * drop;
+            const Vec3f base(0.f, mouthY, head.noseZ * 0.55f);
+            const float L = (0.35f + 0.85f * tOut) * drop;
+            const Vec3f tip = base + Vec3f(0.f, L, -0.34f * L);
+            meshes.push_back(buildTongue(base, tip, 0.27f * head.headHalfW,
+                                         0.05f * head.headHalfW, -0.22f,
+                                         st.tongueCol));
         }
     }
 

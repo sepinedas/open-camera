@@ -104,8 +104,7 @@ private:
         cv::Point2f browL, browR;   // inner eyebrow ends
         cv::Point2f lidL, lidR;     // lower-eyelid centres: where tears well up
         cv::Point2f right, down;    // unit vectors along / across the eye line
-        float open = 0.f;           // 0..1 how far the jaw is open
-        float smile = 0.f;          // 0..1 how much the mouth already grins
+        Expression expr;            // what the face is doing
         // Every landmark, in frame coordinates. Only the mesh filters need the
         // whole set -- the warps work from the handful resolved above -- so
         // this is the one place the full mesh is kept.
