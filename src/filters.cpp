@@ -169,9 +169,19 @@ const cv::Vec3f kGrBrow(30, 84, 42);     // the heavy scowling brow itself
 const cv::Vec3f kGrDark(50, 122, 66);    // softer shading: sockets, hollows
 const cv::Vec3f kGrEye(105, 228, 218);   // yellow-green around the eyes
 
+// A squirrel is read from three things: a chestnut coat darkening over the
+// crown, cream rings round the eyes, and a cream muzzle and throat. The rings
+// are the marking that does most of the work -- without them the face is just
+// a brown animal.
+const cv::Vec3f kSqBase(62, 105, 160);   // BGR: chestnut
+const cv::Vec3f kSqDark(40, 68, 108);    // crown and the sides of the head
+const cv::Vec3f kSqCream(212, 231, 241); // eye rings, muzzle, throat
+const cv::Vec3f kSqNose(30, 30, 42);     // nose leather
+
 constexpr float kDogFur = 0.085f;
 constexpr float kPigFur = 0.035f;
 constexpr float kGrinchFur = 0.115f;
+constexpr float kSquirrelFur = 0.10f;
 
 // The coat colour at one point on the face, blended front to back.
 cv::Vec3f dogColourAt(float u, float v) {
@@ -217,6 +227,26 @@ cv::Vec3f grinchColourAt(float u, float v) {
     return c;
 }
 
+cv::Vec3f squirrelColourAt(float u, float v) {
+    cv::Vec3f c = kSqBase;
+    auto over = [&](const cv::Vec3f& col, float a) {
+        c = c * (1.f - a) + col * a;
+    };
+    // Darker over the crown and down the sides, which is where a squirrel's
+    // coat is deepest and what keeps the face from reading as flat brown.
+    over(kSqDark, ellipseMask(u, v, 0.f, -1.10f, 1.20f, 0.80f, 0.90f));
+    over(kSqDark, ellipseMask(u, v, -1.05f, 0.10f, 0.55f, 1.05f, 0.95f));
+    over(kSqDark, ellipseMask(u, v, 1.05f, 0.10f, 0.55f, 1.05f, 0.95f));
+    // Cream rings round the eyes.
+    over(kSqCream, ellipseMask(u, v, -0.52f, 0.01f, 0.45f, 0.35f, 0.50f));
+    over(kSqCream, ellipseMask(u, v, 0.52f, 0.01f, 0.45f, 0.35f, 0.50f));
+    // Cream muzzle, chin and throat.
+    over(kSqCream, ellipseMask(u, v, 0.f, 1.04f, 0.60f, 0.76f, 0.34f));
+    // Nose leather, small and high on the muzzle.
+    over(kSqNose, ellipseMask(u, v, 0.f, 0.56f, 0.21f, 0.16f, 0.20f));
+    return c;
+}
+
 cv::Vec3f pigColourAt(float u, float v) {
     cv::Vec3f c = kPigBase;
     auto over = [&](const cv::Vec3f& col, float a) {
@@ -229,6 +259,24 @@ cv::Vec3f pigColourAt(float u, float v) {
     // colour edge when the head turns and the snout swings across it.
     over(kPigSnout, ellipseMask(u, v, 0.f, 0.80f, 0.70f, 0.66f, 0.45f));
     return c;
+}
+
+// How a species' face is painted: which markings, and how coarse its coat is.
+// A table rather than a chain of ternaries -- with four of them the chain had
+// stopped being readable, and adding a fifth meant touching three places.
+struct Coat {
+    cv::Vec3f (*colourAt)(float u, float v);
+    float fur;   // texture depth
+    float crown; // extra shagginess toward the top of the head
+};
+
+Coat coatFor(face3d::Species sp) {
+    switch (sp) {
+        case face3d::Species::Pig:      return {pigColourAt, kPigFur, 0.f};
+        case face3d::Species::Grinch:   return {grinchColourAt, kGrinchFur, 1.40f};
+        case face3d::Species::Squirrel: return {squirrelColourAt, kSquirrelFur, 0.55f};
+        default:                        return {dogColourAt, kDogFur, 0.f};
+    }
 }
 
 // --- MediaPipe canonical face-mesh indices --------------------------------
@@ -578,6 +626,7 @@ bool speciesFor(Filter f, face3d::Species& out) {
         case Filter::DogFace: out = face3d::Species::Dog; return true;
         case Filter::PigFace: out = face3d::Species::Pig; return true;
         case Filter::Grinch:  out = face3d::Species::Grinch; return true;
+        case Filter::Squirrel: out = face3d::Species::Squirrel; return true;
         case Filter::Shark:   out = face3d::Species::Shark; return true;
         default: return false;
     }
@@ -934,6 +983,8 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applyAnimalFace(roi, f, off, phase, face3d::Species::Pig);
         } else if (filter == Filter::Grinch) {
             applyAnimalFace(roi, f, off, phase, face3d::Species::Grinch);
+        } else if (filter == Filter::Squirrel) {
+            applyAnimalFace(roi, f, off, phase, face3d::Species::Squirrel);
         } else if (filter == Filter::Shark) {
             // No mesh paint: the model covers the face rather than colouring it.
             applySharkFace(roi, f, off, phase);
@@ -1234,10 +1285,7 @@ void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
     // Colour every vertex once, from where it sits in the head's frame, then
     // let the triangles interpolate between them. Evaluating per vertex rather
     // than per triangle is what makes the markings smooth across the mesh.
-    const bool isPig = (species == face3d::Species::Pig);
-    const bool isGrinch = (species == face3d::Species::Grinch);
-    const float furDepth = isGrinch ? kGrinchFur : (isPig ? kPigFur : kDogFur);
-    const float furCrown = isGrinch ? 1.40f : 0.f;
+    const Coat coat = coatFor(species);
 
     std::vector<cv::Vec3f> vcol(f.mesh.size());
     std::vector<cv::Point2f> vpos(f.mesh.size());
@@ -1247,9 +1295,7 @@ void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
         vpos[i] = cv::Point2f(q.x - org.x, q.y - org.y);
         const cv::Point2f d = q - eyeMid;
         vuv[i] = cv::Point2f(dot(d, f.right) * invEye, dot(d, f.down) * invEye);
-        vcol[i] = isGrinch ? grinchColourAt(vuv[i].x, vuv[i].y)
-                  : isPig  ? pigColourAt(vuv[i].x, vuv[i].y)
-                           : dogColourAt(vuv[i].x, vuv[i].y);
+        vcol[i] = coat.colourAt(vuv[i].x, vuv[i].y);
     }
 
     // Mean brightness of the face, so the shading term below is relative to
@@ -1274,7 +1320,7 @@ void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
         const cv::Point2f tri[3] = {vpos[ia], vpos[ib], vpos[ic]};
         const cv::Vec3f col[3] = {vcol[ia], vcol[ib], vcol[ic]};
         const cv::Point2f uv[3] = {vuv[ia], vuv[ib], vuv[ic]};
-        fillTriangleSmooth(ov, tri, col, uv, invMeanLuma, furDepth, furCrown);
+        fillTriangleSmooth(ov, tri, col, uv, invMeanLuma, coat.fur, coat.crown);
     }
     // Ears and nose on top, as real geometry. They cannot come from the face
     // mesh -- it stops at the face -- so they are oriented by a basis measured
@@ -1290,7 +1336,8 @@ Filter nextFilter(Filter f) {
         case Filter::FaceMesh: return Filter::DogFace;
         case Filter::DogFace:  return Filter::PigFace;
         case Filter::PigFace:  return Filter::Grinch;
-        case Filter::Grinch:   return Filter::Shark;
+        case Filter::Grinch:   return Filter::Squirrel;
+        case Filter::Squirrel: return Filter::Shark;
         case Filter::Shark:    return Filter::None;
     }
     return Filter::None;
@@ -1305,6 +1352,7 @@ const char* filterName(Filter f) {
         case Filter::DogFace:  return "Dog Face";
         case Filter::PigFace:  return "Pig Face";
         case Filter::Grinch:   return "Grinch";
+        case Filter::Squirrel: return "Squirrel";
         case Filter::Shark:    return "Shark";
     }
     return "";

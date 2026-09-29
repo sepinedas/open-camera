@@ -146,6 +146,30 @@ Style styleFor(Species sp) {
         s.noseWide = 0.95f; s.noseTall = 1.30f; s.noseYOff = -0.06f;
         s.noseAmbient = 0.70f; s.noseSpec = 0.12f; s.noseShin = 16;
         s.noseCol = Vec3f(128, 218, 150);
+    } else if (sp == Species::Squirrel) {
+        // Big rounded ears set high on the head and turned outward. Rounded
+        // right off -- a pointed lobe up there reads as a horn, which is the
+        // mistake the pig's ears started out making.
+        s.earAttachX = 0.66f; s.earAttachY = 0.18f;
+        s.earTipX = 0.84f;    s.earTipY = -0.60f;
+        s.earHalfW = 0.46f;   s.earRound = 1.5f;
+        s.earBaseW = 0.66f;
+        s.earBowl = 0.17f;    s.earRim = 0.062f;
+        s.earShell = 0.055f;  s.earYaw = 0.46f;
+        s.earCurl = 0.09f;    s.earInnerAmt = 0.88f;
+        s.earMottle = 0.09f;
+        s.earCol = Vec3f(68, 112, 168);
+        s.earInnerCol = Vec3f(104, 126, 176);
+        s.snout = false;
+        s.noseR = 0.15f;
+        s.noseWide = 1.05f; s.noseTall = 0.82f; s.noseYOff = 0.02f;
+        s.noseAmbient = 0.34f; s.noseSpec = 0.46f; s.noseShin = 28;
+        s.nostrilX = 0.44f; s.nostrilY = 0.28f;
+        s.nostrilRx = 0.28f; s.nostrilRy = 0.38f;
+        s.nostrilDepth = 0.26f;
+        s.noseCol = Vec3f(30, 30, 42);
+        s.nostrilCol = Vec3f(12, 12, 18);
+        s.tongueCol = Vec3f(124, 110, 202);
     } else { // Pig
         // Ears stand up off the crown and lean outward: the tip's y is
         // negative, i.e. *above* the crown, which is what keeps them clear of
@@ -583,6 +607,87 @@ Mesh buildSnout(const Head& h, const Style& st) {
     return m;
 }
 
+
+// A rounded lobe: half an ellipsoid facing the camera. The squirrel's cheek
+// pouches are these, and so is a nose once the nostrils are cut into it --
+// this is the plain version, with nothing carved.
+Mesh buildLobe(const Vec3f& centre, float rx, float ry, float rz,
+               const Vec3f& col, float ambient, float spec, int shin) {
+    Mesh m;
+    m.doubleSided = true;
+    m.ambient = ambient;
+    m.spec = spec;
+    m.shin = shin;
+    const int nSeg = 20, nRing = 7;
+    std::vector<std::vector<int>> ring(nRing);
+    for (int r = 0; r < nRing; ++r) {
+        const float lat = 0.5f * kPi * (float)r / (nRing - 1);
+        const float cl = std::cos(lat), sl = std::sin(lat);
+        for (int i = 0; i < nSeg; ++i) {
+            const float a = 2.f * kPi * i / nSeg;
+            ring[r].push_back(m.add(centre + Vec3f(rx * cl * std::cos(a),
+                                                   ry * cl * std::sin(a),
+                                                   -rz * sl),
+                                    col));
+        }
+    }
+    for (int r = 0; r + 1 < nRing; ++r)
+        for (int i = 0; i < nSeg; ++i) {
+            const int j = (i + 1) % nSeg;
+            m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
+            m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
+        }
+    m.computeNormals();
+    return m;
+}
+
+// A pair of incisors: flat blades hanging below the muzzle, rounded off at
+// the bottom. They are always showing a little -- that is the point of a
+// squirrel -- and come further down as the jaw opens.
+Mesh buildIncisors(const Head& h, float len, float halfW, float thick,
+                   const Vec3f& col) {
+    Mesh m;
+    m.doubleSided = true;
+    m.ambient = 0.62f;
+    m.spec = 0.26f;
+    m.shin = 24.f;
+    const float topY = h.noseY + 0.30f;
+    const float z0 = h.noseZ * 0.66f;
+    const int nT = 7, nA = 7;
+    for (float side : {-1.f, 1.f}) {
+        const float cx = side * (halfW + 0.012f);
+        std::vector<std::vector<int>> front(nT), back(nT);
+        for (int ti = 0; ti < nT; ++ti) {
+            const float t = (float)ti / (nT - 1);
+            // Rounded at the tip, so it reads as a tooth and not a peg.
+            const float w = halfW * std::sqrt(std::max(0.f, 1.f - t * t * t));
+            const float y = topY + len * t;
+            for (int ai = 0; ai < nA; ++ai) {
+                const float a = -1.f + 2.f * (float)ai / (nA - 1);
+                const float dome = std::sqrt(std::max(0.f, 1.f - a * a));
+                const Vec3f mid(cx + w * a, y, z0);
+                front[ti].push_back(m.add(mid + Vec3f(0.f, 0.f, -thick * dome),
+                                          col * (0.93f + 0.09f * dome)));
+                back[ti].push_back(m.add(mid + Vec3f(0.f, 0.f, thick * 0.4f),
+                                         col * 0.70f));
+            }
+        }
+        for (int ti = 0; ti + 1 < nT; ++ti)
+            for (int ai = 0; ai + 1 < nA; ++ai) {
+                m.face(front[ti][ai], front[ti][ai + 1], front[ti + 1][ai + 1]);
+                m.face(front[ti][ai], front[ti + 1][ai + 1], front[ti + 1][ai]);
+                m.face(back[ti][ai], back[ti + 1][ai + 1], back[ti][ai + 1]);
+                m.face(back[ti][ai], back[ti + 1][ai], back[ti + 1][ai + 1]);
+            }
+        for (int ti = 0; ti + 1 < nT; ++ti)
+            for (int ai : {0, nA - 1}) {
+                m.face(front[ti][ai], back[ti][ai], back[ti + 1][ai]);
+                m.face(front[ti][ai], back[ti + 1][ai], front[ti + 1][ai]);
+            }
+    }
+    m.computeNormals();
+    return m;
+}
 
 // A tongue: a flattened slab swept from `base` toward `tip`, rounded off at
 // the end and given a little thickness, so it reads from the side as well as
@@ -1162,6 +1267,36 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         // scores it, and otherwise by the jaw simply being open -- which is
         // both true of a real mouth and the only thing that reliably fires,
         // since MediaPipe's tongueOut seldom rises above its noise floor.
+        if (species == Species::Squirrel) {
+            // Buck teeth, a little longer as the mouth opens.
+            const float len = 0.21f + 0.16f * head.expr.jawOpen;
+            meshes.push_back(buildIncisors(head, len, 0.084f, 0.038f,
+                                           Vec3f(226, 238, 245)));
+            // Cheek pouches. Never quite empty, and filling right out on
+            // cheekPuff -- the one blendshape nothing else here had a use
+            // for, and the thing a squirrel's face is known for doing.
+            // Out on the cheeks rather than beside the nose, and flattened
+            // against the face: a sphere set in close reads as a ball stuck
+            // on, not as a cheek with something in it.
+            // Out on the cheeks rather than beside the nose, and flattened
+            // against the face: a sphere set in close reads as a ball stuck
+            // on, not as a cheek with something in it. Coloured a lighter
+            // chestnut than the coat, so it reads as the coat bulging rather
+            // than as a separate pale object sitting on top of it. Absent
+            // altogether until the cheeks are actually puffed.
+            const float puff = clampf(head.expr.cheekPuff, 0.f, 1.f);
+            if (puff > 0.04f) {
+                const float r = (0.12f + 0.30f * puff) * head.headHalfW;
+                const float cy2 = head.noseY + 0.48f * (head.chinY - head.noseY);
+                for (float side : {-1.f, 1.f}) {
+                    const Vec3f c(side * (0.78f + 0.12f * puff) * head.headHalfW,
+                                  cy2, head.noseZ * 0.15f);
+                    meshes.push_back(buildLobe(c, r, r * 0.82f, r * 0.48f,
+                                               Vec3f(120, 168, 214), 0.52f,
+                                               0.14f, 16));
+                }
+            }
+        }
         const float tOut = std::max(head.expr.tongue, 0.55f * head.expr.jawOpen);
         if (tOut > 0.02f) {
             const float drop = head.chinY - head.noseY;

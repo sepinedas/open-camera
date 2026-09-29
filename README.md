@@ -288,7 +288,7 @@ build/open-lego-camera [options]
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
 **Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** →
-**Grinch** → **Shark** → off.
+**Grinch** → **Squirrel** → **Shark** → off.
 The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
@@ -330,6 +330,19 @@ you then capture.
   normal rather than pasted in front of it.
 
   (The character is Dr. Seuss's; the geometry and palette here are ours.)
+- **Squirrel** is the fourth of the painted family: a chestnut coat that
+  darkens over the crown and down the sides, cream rings round the eyes — the
+  marking that does most of the work, since without it the face is just a
+  brown animal — and a cream muzzle and throat. Over it go big round ears, a
+  small dark nose, and a pair of **buck teeth** that lengthen as the jaw
+  opens.
+
+  It is also the one filter that uses **`cheekPuff`**: puff your cheeks and
+  its cheek pouches fill out, which is the thing a squirrel's face is known
+  for doing. They sit out on the cheeks and flattened against them, coloured a
+  lighter chestnut than the coat — set in close and spherical and pale, as
+  they were first built, they read as two balls stuck on rather than as a
+  cheek with something in it.
 - **Shark** is the odd one out: nothing is painted onto the mesh at all. The
   whole head is replaced by a 3D model — skull, hinged jaw, two rows of teeth,
   black eyes, gill slits and a dorsal fin — and the mesh drives it rather than
@@ -391,6 +404,7 @@ rather than just sit on the face:
 | brows | `browInnerUp`, `browOuterUp*`, `browDown*` | the animals prick their ears up, or lay them back |
 | tongue | `tongueOut`, and the jaw | a tongue comes out — the shark's along the floor of its jaw, the animals' out of the muzzle |
 | jaw sideways | `jawLeft` / `jawRight` | slides the shark's lower jaw, teeth and tongue as one group |
+| cheeks | `cheekPuff` | fills out the squirrel's cheek pouches |
 
 Three things are worth knowing about how these are read:
 
@@ -409,6 +423,11 @@ Three things are worth knowing about how these are read:
 
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
+
+**Markings are a table, not a chain.** Each painted species is a `Coat` — a
+marking function, a fur depth and how much shaggier the crown is — looked up
+by species. With four of them the chain of ternaries it replaced had stopped
+being readable, and adding a fifth meant editing three separate places.
 
 **Following the head's own axes.** The eye line from the MediaPipe mesh gives
 the in-plane roll and the scale, and every displacement is applied along those

@@ -27,6 +27,7 @@ enum class Species {
     Dog,
     Pig,
     Grinch,
+    Squirrel,
     // The odd one out: not ears and a muzzle added over a painted face, but a
     // whole head in place of it -- skull, hinged jaw, teeth and all. It needs
     // nothing painted underneath, so the filter that draws it skips the mesh
