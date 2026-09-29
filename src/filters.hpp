@@ -147,13 +147,13 @@ private:
     // from the face mesh in three dimensions.
     void drawAnimalParts(cv::Mat& frame, const Face& f, cv::Point2f off,
                          double phase, face3d::Species species) const;
-    // Replace the head with a 3D shark. Unlike the animals this paints
-    // nothing onto the mesh -- the model covers the whole head -- but it is
-    // still driven by the mesh: the same measured basis orients it, the head's
-    // own crown, chin and temples size it, and the jawOpen blendshape works
-    // its jaw.
-    void applySharkFace(cv::Mat& frame, const Face& f, cv::Point2f off,
-                        double phase) const;
+    // Replace the head outright with a 3D model -- the shark, or the
+    // squirrel. Unlike the painted animals this puts nothing on the mesh, but
+    // it is still driven by it: the same measured basis orients the model, the
+    // head's own crown, chin and temples size it, and its expression works
+    // the jaw, the eyelids, the tongue and the cheeks.
+    void applyModelHead(cv::Mat& frame, const Face& f, cv::Point2f off,
+                        double phase, face3d::Species species) const;
 
     // Read the head's pose, scale, proportions and expression off the mesh.
     // Returns false when the mesh is missing or the face is too small to be

@@ -330,38 +330,48 @@ you then capture.
   normal rather than pasted in front of it.
 
   (The character is Dr. Seuss's; the geometry and palette here are ours.)
-- **Squirrel** is the fourth of the painted family: a chestnut coat that
-  darkens over the crown and down the sides, cream rings round the eyes — the
-  marking that does most of the work, since without it the face is just a
-  brown animal — and a cream muzzle and throat. Over it go big round ears, a
-  small dark nose, and a pair of **buck teeth** that lengthen as the jaw
-  opens.
+- **Squirrel** and **Shark** are not paint at all: each replaces the whole
+  head with a 3D model. Nothing is drawn on the mesh — the mesh *drives* the
+  model instead. The same measured basis orients it, the head's own crown,
+  chin and temples size it to the face it is worn by, and its expression works
+  the jaw, the eyelids, the tongue and the cheeks.
 
-  It is also the one filter that uses **`cheekPuff`**: puff your cheeks and
-  its cheek pouches fill out, which is the thing a squirrel's face is known
-  for doing. They sit out on the cheeks and flattened against them, coloured a
-  lighter chestnut than the coat — set in close and spherical and pale, as
-  they were first built, they read as two balls stuck on rather than as a
-  cheek with something in it.
-- **Shark** is the odd one out: nothing is painted onto the mesh at all. The
-  whole head is replaced by a 3D model — skull, hinged jaw, two rows of teeth,
-  black eyes, gill slits and a dorsal fin — and the mesh drives it rather than
-  being drawn on. The same basis orients it, the measured crown, chin and
-  temples *size* it to the head it is worn by, and the `jawOpen` blendshape
-  works its jaw, so opening your mouth opens the shark's.
+  Both are the same construction: a skull and a jaw that hinges against it,
+  each swept along the head's own longitudinal axis as a single ring grid —
+  an outer arc, then a return along the mouth line — so the inside of the
+  mouth closes itself and one triangle pattern winds the whole thing. Behind
+  the hinge the return bulges into the other half of the ellipse, which is
+  what makes the head solid there rather than two shells with a slot between
+  them. What differs is a table of curves and colours (`HeadShape`), plus the
+  trim hung off it.
 
-  Two things about it are deliberately not anatomical, because the camera only
-  ever sees it from the front:
+  * The **shark** is a long smooth cone: a rostrum, two rows of teeth, gill
+    slits, a dorsal fin, and a jaw that drops a long way.
+  * The **squirrel** is a round braincase that holds its width most of the way
+    back and then draws out into a short muzzle. Over it go big round ears
+    that answer the brows, large forward eyes, a nose on the point of the
+    muzzle, **buck teeth** hanging just under it — placed in front of the
+    muzzle's face, or the closed jaw simply swallows them — and **cheek
+    pouches** that fill out on `cheekPuff`, which is the one blendshape
+    nothing else here had a use for.
 
-  * **The snout points down as well as forward.** The projection is
-    orthographic, so a snout aimed at the lens has no length on screen at all.
-    It also has to reach past the chin: anything that tapers forward *inside*
-    the head hides behind the largest cross-section, which is the one that has
-    to cover the head in the first place.
+  Two things about both are deliberately not anatomical, because the camera
+  only ever sees them from the front:
+
+  * **The muzzle points down as well as forward.** The projection is
+    orthographic, so a muzzle aimed at the lens has no length on screen at
+    all. It also has to reach past the chin: anything that tapers forward
+    *inside* the head hides behind the largest cross-section, which is the one
+    that has to cover the head in the first place.
   * **The countershading is keyed to height, not to the cross-section.**
     Head-on, almost the entire visible surface is the animal's dorsal third —
-    the white belly faces the floor and shows as a hairline at the silhouette.
-    Shaded honestly the shark comes out uniformly grey.
+    the pale belly faces the floor and shows as a hairline at the silhouette.
+    Shaded honestly the shark comes out uniformly grey and the squirrel
+    uniformly brown.
+
+  The squirrel's eyes are a third such compromise: a real one's are far round
+  the side of its head, and brought that far round only one of them reads as
+  an eye from the front, so they are pulled toward the midline.
 
 **Paying for a head-sized model.** The shark first ran at 61 ms a frame where
 the other 3D filters ran at 8–12, which is a different thing entirely on a Pi.
@@ -424,10 +434,12 @@ Three things are worth knowing about how these are read:
 The first two filters *warp your actual face* — no cartoon mouth or eyes are pasted on
 top; only the crying tears are drawn over the image.
 
-**Markings are a table, not a chain.** Each painted species is a `Coat` — a
-marking function, a fur depth and how much shaggier the crown is — looked up
-by species. With four of them the chain of ternaries it replaced had stopped
-being readable, and adding a fifth meant editing three separate places.
+**Two tables, one for each kind of filter.** A painted species is a `Coat` —
+a marking function, a fur depth and how much shaggier the crown is. A
+whole-head model is a `HeadShape` — the silhouette curves, the girth taper
+and the countershading. Both replaced chains of ternaries that had stopped
+being readable at three or four species, where adding another meant editing
+several places at once.
 
 **Following the head's own axes.** The eye line from the MediaPipe mesh gives
 the in-plane roll and the scale, and every displacement is applied along those

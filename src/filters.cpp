@@ -169,19 +169,9 @@ const cv::Vec3f kGrBrow(30, 84, 42);     // the heavy scowling brow itself
 const cv::Vec3f kGrDark(50, 122, 66);    // softer shading: sockets, hollows
 const cv::Vec3f kGrEye(105, 228, 218);   // yellow-green around the eyes
 
-// A squirrel is read from three things: a chestnut coat darkening over the
-// crown, cream rings round the eyes, and a cream muzzle and throat. The rings
-// are the marking that does most of the work -- without them the face is just
-// a brown animal.
-const cv::Vec3f kSqBase(62, 105, 160);   // BGR: chestnut
-const cv::Vec3f kSqDark(40, 68, 108);    // crown and the sides of the head
-const cv::Vec3f kSqCream(212, 231, 241); // eye rings, muzzle, throat
-const cv::Vec3f kSqNose(30, 30, 42);     // nose leather
-
 constexpr float kDogFur = 0.085f;
 constexpr float kPigFur = 0.035f;
 constexpr float kGrinchFur = 0.115f;
-constexpr float kSquirrelFur = 0.10f;
 
 // The coat colour at one point on the face, blended front to back.
 cv::Vec3f dogColourAt(float u, float v) {
@@ -227,26 +217,6 @@ cv::Vec3f grinchColourAt(float u, float v) {
     return c;
 }
 
-cv::Vec3f squirrelColourAt(float u, float v) {
-    cv::Vec3f c = kSqBase;
-    auto over = [&](const cv::Vec3f& col, float a) {
-        c = c * (1.f - a) + col * a;
-    };
-    // Darker over the crown and down the sides, which is where a squirrel's
-    // coat is deepest and what keeps the face from reading as flat brown.
-    over(kSqDark, ellipseMask(u, v, 0.f, -1.10f, 1.20f, 0.80f, 0.90f));
-    over(kSqDark, ellipseMask(u, v, -1.05f, 0.10f, 0.55f, 1.05f, 0.95f));
-    over(kSqDark, ellipseMask(u, v, 1.05f, 0.10f, 0.55f, 1.05f, 0.95f));
-    // Cream rings round the eyes.
-    over(kSqCream, ellipseMask(u, v, -0.52f, 0.01f, 0.45f, 0.35f, 0.50f));
-    over(kSqCream, ellipseMask(u, v, 0.52f, 0.01f, 0.45f, 0.35f, 0.50f));
-    // Cream muzzle, chin and throat.
-    over(kSqCream, ellipseMask(u, v, 0.f, 1.04f, 0.60f, 0.76f, 0.34f));
-    // Nose leather, small and high on the muzzle.
-    over(kSqNose, ellipseMask(u, v, 0.f, 0.56f, 0.21f, 0.16f, 0.20f));
-    return c;
-}
-
 cv::Vec3f pigColourAt(float u, float v) {
     cv::Vec3f c = kPigBase;
     auto over = [&](const cv::Vec3f& col, float a) {
@@ -274,7 +244,6 @@ Coat coatFor(face3d::Species sp) {
     switch (sp) {
         case face3d::Species::Pig:      return {pigColourAt, kPigFur, 0.f};
         case face3d::Species::Grinch:   return {grinchColourAt, kGrinchFur, 1.40f};
-        case face3d::Species::Squirrel: return {squirrelColourAt, kSquirrelFur, 0.55f};
         default:                        return {dogColourAt, kDogFur, 0.f};
     }
 }
@@ -938,11 +907,14 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
                 parts = face3d::bounds(h, sp);
             if (parts.area() > 0)
                 parts = grow(parts, 6, 6, 6); // slack for the idle ear wiggle
-            // The animals paint the face mesh as well as hanging parts off
-            // it; the shark paints nothing, because it covers the face.
-            r = (filter == Filter::Shark) ? parts
-                                          : (parts.area() == 0 ? grow(f, 4, 4, 4)
-                                                               : (grow(f, 4, 4, 4) | parts));
+            // The painted animals colour the face mesh as well as hanging
+            // parts off it. The shark and the squirrel paint nothing at all,
+            // because they replace the head rather than decorate it.
+            const bool wholeHead =
+                (filter == Filter::Shark || filter == Filter::Squirrel);
+            r = wholeHead ? parts
+                          : (parts.area() == 0 ? grow(f, 4, 4, 4)
+                                               : (grow(f, 4, 4, 4) | parts));
         } else {
             // The warps need room for their Gaussian falloff and the tears.
             const int mx = std::max(8, f.width * 2 / 5);
@@ -984,10 +956,9 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
         } else if (filter == Filter::Grinch) {
             applyAnimalFace(roi, f, off, phase, face3d::Species::Grinch);
         } else if (filter == Filter::Squirrel) {
-            applyAnimalFace(roi, f, off, phase, face3d::Species::Squirrel);
+            applyModelHead(roi, f, off, phase, face3d::Species::Squirrel);
         } else if (filter == Filter::Shark) {
-            // No mesh paint: the model covers the face rather than colouring it.
-            applySharkFace(roi, f, off, phase);
+            applyModelHead(roi, f, off, phase, face3d::Species::Shark);
         }
     }
 }
@@ -1254,11 +1225,12 @@ void FaceFilter::drawAnimalParts(cv::Mat& frame, const Face& f,
     face3d::render(frame, h, species);
 }
 
-void FaceFilter::applySharkFace(cv::Mat& frame, const Face& f,
-                                cv::Point2f off, double phase) const {
+void FaceFilter::applyModelHead(cv::Mat& frame, const Face& f,
+                                cv::Point2f off, double phase,
+                                face3d::Species species) const {
     face3d::Head h;
     if (!headFromFace(f, off, phase, h)) return;
-    face3d::render(frame, h, face3d::Species::Shark);
+    face3d::render(frame, h, species);
 }
 
 void FaceFilter::applyAnimalFace(cv::Mat& frame, const Face& f,
