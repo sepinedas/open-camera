@@ -814,6 +814,15 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
         const float bDown = bsPair("browDownLeft", "browDownRight");
         e.browDown = bDown >= 0.f ? clamp01(bDown) : 0.f;
 
+        // Sadness. The mouth going down is the strongest part of it, and the
+        // inner brows lifting *without* the outer ones is the rest -- lift
+        // both and the face reads as surprise instead, so only the excess of
+        // inner over outer counts.
+        const float innerOnly = (bUpInner >= 0.f && bUpOuter >= 0.f)
+                                    ? std::max(0.f, bUpInner - bUpOuter)
+                                    : 0.f;
+        e.sad = clamp01(0.85f * e.frown + 0.55f * innerOnly);
+
         const float pk = bs("mouthPucker");
         e.pucker = pk >= 0.f ? clamp01(pk) : 0.f;
         const float cp = bs("cheekPuff");

@@ -18,6 +18,9 @@ struct Expression {
     float jawOpen = 0.f;
     float smile = 0.f;    // corners pulled up and back
     float frown = 0.f;    // and down
+    // A sad face: the corners down and the *inner* brows up together. Not a
+    // blendshape of its own -- see the note in filters.cpp.
+    float sad = 0.f;
     float blinkL = 0.f;   // 1 = shut. Image-left eye
     float blinkR = 0.f;
     float browUp = 0.f;   // raised, inner and outer together

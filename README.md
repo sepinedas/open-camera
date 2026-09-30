@@ -347,7 +347,8 @@ you then capture.
   trim hung off it.
 
   * The **shark** is a long smooth cone: a rostrum, two rows of teeth, gill
-    slits, a dorsal fin, and a jaw that drops a long way.
+    slits, a dorsal fin, and a jaw that drops nearly 50 degrees, which is
+    about what a real one manages.
   * The **squirrel** is a round cranium, widest at the cheeks, with a short
     blunt muzzle stepping out of its lower front. That outline is *not* any
     exponent, which is how the first attempt came out looking like a shark in
@@ -438,7 +439,8 @@ rather than just sit on the face:
 | | driven by | what it does |
 |---|---|---|
 | jaw | `jawOpen` | the shark's jaw hinges; the warps stretch the mouth |
-| smile / frown | `mouthSmile*`, `mouthFrown*` | lifts or drops the corners of the shark's gape, curling the whole mouth line |
+| smile | `mouthSmile*` | lifts the corners of the gape and pulls them back, widening it; rounds the squirrel's cheeks; lifts the elephant's ears and curls its trunk |
+| sad | `mouthFrown*` **and** `browInnerUp` | drops the corners, lays the ears back, and half-lids the eyes |
 | blink | **eyelid landmarks**, not a blendshape | a lid slides down the eye of whichever model is worn |
 | brows | `browInnerUp`, `browOuterUp*`, `browDown*` | the animals prick their ears up, or lay them back |
 | tongue | `tongueOut`, and the jaw | a tongue comes out — the shark's along the floor of its jaw, the animals' out of the muzzle |
@@ -453,6 +455,22 @@ Three things are worth knowing about how these are read:
   so which eye is on screen-left depends on whether the preview is mirrored.
   `detect()` settles that once from the eyes and puts every pair — landmarks
   and blendshapes alike — into screen order.
+**A sad face is not one blendshape.** It is the corners of the mouth down
+*and* the inner ends of the brows up, with the outer ends staying put — which
+is what distinguishes it from surprise. `mouthFrown` alone misses half of it
+and `browInnerUp` alone fires on plenty of things that are not sadness, so
+`detect()` combines them once into `Expression::sad` and the models read that.
+
+**Where an expression shows depends on the model.** The shark's mouth is most
+of its face, so curling its mouth line is enough. The squirrel's is small and
+under its muzzle and the elephant's is behind its trunk, so on those the same
+expression has to go somewhere visible as well: the squirrel rounds its cheeks
+and lays its ears back, the elephant lifts or drops its ears and curls its
+trunk. Their mouth lines move only moderately, and for a structural reason —
+on a head described by control points the mouth line also sets each
+cross-section's upper and lower radii, so shifting it far does not curl the
+mouth, it reshapes the head.
+
 **Blinking slides a lid, it does not squash the eye.** An eyeball keeps its
 shape when you blink; a lid slides over it. Squashing was the first attempt
 and it failed twice: it scaled the bead's stand-off from the head along with

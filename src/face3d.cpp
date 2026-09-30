@@ -930,14 +930,21 @@ HeadShape sharkShape(const Head& h) {
     // snout, which curls the whole mouth line upward -- the same shape change
     // a person's mouth makes, read off mouthSmile and applied to a jaw that
     // has no muscles of its own.
-    p.cyBack = h.crownY + (0.56f - 0.14f * h.expr.smile + 0.08f * h.expr.frown) * len;
+    // A smile lifts the corners of the gape and a sad face drops them; the
+    // point of the snout does not move either way, so the whole mouth line
+    // curls. Both are worth several times what they were: at the old
+    // amplitudes neither was visible on a head this size.
+    p.cyBack = h.crownY +
+               (0.56f - 0.30f * h.expr.smile + 0.20f * h.expr.sad) * len;
+    // A smile also pulls the corners back, widening the gape.
+    const float wider = 0.07f * h.expr.smile;
     p.cyTip = h.chinY + 0.34f * len;
     p.botBack = h.chinY + 0.12f * len;
     p.rxMax = h.headHalfW * 1.40f;
     // Clearance over the crown, so the top of a real head stays inside the
     // shell rather than poking through the back of it.
     p.topBack = h.crownY - 0.17f * len;
-    p.sHinge = 0.19f;
+    p.sHinge = 0.19f - wider;
     p.zBack = 1.20f;
     p.zTip = h.noseZ - 1.15f;
     p.girthPow = 1.75f; p.girthRoot = 0.60f; p.girthBulge = 0.08f;
@@ -1100,11 +1107,19 @@ HeadShape squirrelShape(const Head& h) {
     // past the chin -- far enough to be seen against the head's own outline,
     // which is all the orthographic projection allows, and no further.
     p.e = h.expr;
-    // A smile lifts the corners of the small gape; the muzzle's point does
-    // not move.
-    const float lift = (-0.06f * h.expr.smile + 0.04f * h.expr.frown) * len;
-    for (int i = 0; i < kProfN; ++i)
-        p.mouth[i] += lift * (1.f - (float)i / (kProfN - 1));
+    // A smile lifts the corners of the gape and a sad face drops them; the
+    // muzzle's point stays where it is, so the line between them curls.
+    // Weighted toward the corners rather than falling off linearly, which is
+    // how a mouth actually changes shape.
+    // Moderate on purpose. On a head described by control points the mouth
+    // line also sets each cross-section's upper and lower radii, so shifting
+    // it far does not curl the mouth -- it reshapes the whole head. The rest
+    // of the expression goes to the ears, the eyes and the cheeks.
+    const float lift = (-0.15f * h.expr.smile + 0.10f * h.expr.sad) * len;
+    for (int i = 0; i < kProfN; ++i) {
+        const float t = (float)i / (kProfN - 1);
+        p.mouth[i] += lift * std::pow(1.f - t, 0.55f);
+    }
     // Kept for the parts that still read them: the extremes of the outline.
     // The top of the skull is the *highest* control point, not the first one
     // -- the outline rises from the back of the head before it falls away.
@@ -1115,7 +1130,10 @@ HeadShape squirrelShape(const Head& h) {
     p.cyTip = h.crownY + p.mouth[kProfN - 1] * len;
     p.botBack = h.crownY + p.bot[0] * len;
     p.rxMax = h.headHalfW * 1.30f;
-    p.sHinge = 0.62f;   // the gape belongs to the muzzle, not to the cranium
+    // A smile pulls the corners back, widening the gape.
+    // Further back than the muzzle alone: with the hinge right at the
+    // muzzle's root the mouth was too short for opening it to read.
+    p.sHinge = 0.52f - 0.09f * h.expr.smile;
     p.zBack = 1.25f;
     p.zTip = h.noseZ - 0.35f;
     p.back = Vec3f(52, 92, 148);     // BGR: chestnut along the back
@@ -1153,9 +1171,11 @@ HeadShape elephantShape(const Head& h) {
     }
     p.sectionFn = muzzleSection;
     p.e = h.expr;
-    const float lift = (-0.05f * h.expr.smile + 0.03f * h.expr.frown) * len;
-    for (int i = 0; i < kProfN; ++i)
-        p.mouth[i] += lift * (1.f - (float)i / (kProfN - 1));
+    const float lift = (-0.13f * h.expr.smile + 0.09f * h.expr.sad) * len;
+    for (int i = 0; i < kProfN; ++i) {
+        const float t = (float)i / (kProfN - 1);
+        p.mouth[i] += lift * std::pow(1.f - t, 0.55f);
+    }
     float hi = p.top[0];
     for (int i = 1; i < kProfN; ++i) hi = std::min(hi, p.top[i]);
     p.topBack = h.crownY + hi * len;
@@ -1165,7 +1185,7 @@ HeadShape elephantShape(const Head& h) {
     // Broad rather than tall: an elephant's head is wider than it is deep
     // and wider than it is high, and the ears hang off the width of it.
     p.rxMax = h.headHalfW * 1.62f;
-    p.sHinge = 0.55f;
+    p.sHinge = 0.55f - 0.08f * h.expr.smile;
     p.zBack = 1.30f;
     p.zTip = h.noseZ - 0.45f;
     p.back = Vec3f(112, 112, 118);   // BGR: elephant grey, barely warm
@@ -1314,11 +1334,19 @@ Mesh buildMuzzleTongue(const HeadShape& p) {
     const Section a = sectionAt(s0, p);
     // Out past the teeth only as far as the tongue is actually out, and only
     // when there is a gap for it to come through.
-    const float reach = 0.45f + 0.95f * p.e.tongue * (0.35f + 0.65f * p.e.jawOpen);
+    // How far out of the mouth it comes.
+    //
+    // tongueOut drives it when the model scores it, and a wide-open mouth
+    // pushes it part way out by itself -- which is both true of a real mouth
+    // and the only thing that fires reliably, since MediaPipe seldom scores
+    // tongueOut above its noise floor. See the note on it in filters.cpp.
+    const float gape = clampf((p.e.jawOpen - 0.55f) / 0.40f, 0.f, 1.f);
+    const float out = std::max(p.e.tongue, 0.55f * gape);
+    const float reach = 0.45f + 1.15f * out * (0.40f + 0.60f * p.e.jawOpen);
     const Vec3f base(0.f, a.cy, a.z);
     const Vec3f far(0.f, p.cyTip, p.zTip);
     const Vec3f tip = base + (far - base) * reach;
-    return buildTongue(base, tip, 0.66f * a.rx, 0.10f * a.rx, 0.16f,
+    return buildTongue(base, tip, 0.74f * a.rx, 0.11f * a.rx, 0.16f,
                        Vec3f(126, 112, 206));
 }
 
@@ -1341,7 +1369,11 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
     // head alone: scaling that by the lid factor too -- as this did -- sank
     // the whole thing into the surface it sits on and a shut eye simply
     // vanished. A closed lid bulges outward anyway, it does not sink.
-    const float blink = clampf((side < 0.f) ? p.e.blinkL : p.e.blinkR, 0.f, 1.f);
+    // Half-lidding on a sad face, on top of any actual blink: eyes narrowed
+    // a little is most of what makes an expression read as downcast.
+    const float blink = clampf(((side < 0.f) ? p.e.blinkL : p.e.blinkR) +
+                                   0.30f * p.e.sad,
+                               0.f, 1.f);
     // Where the two lids have got to, in the same -1..1 units as the height
     // up the eye. They start clear of it and close toward each other, meeting
     // a little below the middle as real ones do.
@@ -1611,7 +1643,8 @@ void addSquirrelTrim(std::vector<Mesh>& out, const Head& head,
     eh.crownY = p.topBack + 0.16f * len;
     eh.headHalfW = p.rxMax * 0.82f;
     const float wig = 0.05f * std::sin((float)head.phase * 0.11f) +
-                      0.34f * head.expr.browUp - 0.30f * head.expr.browDown;
+                      0.34f * head.expr.browUp - 0.30f * head.expr.browDown -
+                      0.30f * head.expr.sad; // a sad animal's ears go back
     out.push_back(buildEar(-1.f, wig, eh, st));
     out.push_back(buildEar(+1.f, wig, eh, st));
 
@@ -1653,7 +1686,10 @@ void addSquirrelTrim(std::vector<Mesh>& out, const Head& head,
     // Cheek pouches. Out on the cheeks and flattened against them, in a
     // lighter chestnut than the coat so they read as the head bulging rather
     // than as two pale objects stuck on it. Absent until actually puffed.
-    const float puff = clampf(head.expr.cheekPuff, 0.f, 1.f);
+    // A smile rounds the cheeks out a little, over and above any actual
+    // puffing: on this head it is the clearest place a smile can show.
+    const float puff = clampf(std::max(head.expr.cheekPuff,
+                                       0.40f * head.expr.smile), 0.f, 1.f);
     if (puff > 0.04f) {
         const Section cs = sectionAt(0.50f, p);
         const float r = (0.16f + 0.26f * puff) * p.rxMax;
@@ -1680,8 +1716,11 @@ void addElephantTrim(std::vector<Mesh>& out, const Head& head,
     // crown: hung from the crown the fans splay upward like wings.
     eh.crownY = p.topBack + 0.47f * len;
     eh.headHalfW = p.rxMax;
+    // The mouth is behind the trunk and barely visible, so a smile and a sad
+    // face have to show in the ears as well or they do not show at all.
     const float wig = 0.04f * std::sin((float)head.phase * 0.09f) +
-                      0.22f * head.expr.browUp - 0.18f * head.expr.browDown;
+                      0.22f * head.expr.browUp - 0.18f * head.expr.browDown +
+                      0.20f * head.expr.smile - 0.24f * head.expr.sad;
     out.push_back(buildEar(-1.f, wig, eh, st));
     out.push_back(buildEar(+1.f, wig, eh, st));
 
@@ -1718,7 +1757,11 @@ void addElephantTrim(std::vector<Mesh>& out, const Head& head,
                                  // rising but coming back over, which is what
                                  // makes the raise read head-on instead of
                                  // merely foreshortening the trunk.
-                                 0.26f + 2.70f * raise + 0.60f * tipCurl,
+                                 // A smile curls the tip up too, and a sad
+                                 // face lets it hang.
+                                 0.26f + 2.70f * raise + 0.60f * tipCurl +
+                                     0.55f * head.expr.smile -
+                                     0.18f * head.expr.sad,
                                  0.f,
                                  (1.38f + 0.12f * raise) * len,
                                  0.29f * p.rxMax, 0.34f,
@@ -1749,8 +1792,11 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
                                  : elephantShape(head);
         // A little always ajar, so the teeth show even with the mouth shut,
         // then opened the rest of the way by the jawOpen blendshape.
+        // How far the jaw drops. A shark's gape is enormous and the others
+        // are not, but all three were opening far too little to read as an
+        // open mouth at all.
         const float ang = (shark ? 0.07f : 0.04f) +
-                          (shark ? 0.34f : 0.22f) *
+                          (shark ? 0.78f : 0.52f) *
                               clampf(head.expr.jawOpen, 0.f, 1.f);
         const Section hinge = sectionAt(sp.sHinge, sp);
         const Vec3f pivot(0.f, hinge.cy, hinge.z);
