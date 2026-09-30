@@ -73,6 +73,7 @@ enum class Filter {
     Grinch,   // green, shaggy, pointed ears and a heavy scowl
     Shark,    // the whole head replaced by a 3D shark, jaw and all
     Squirrel, // chestnut coat, round ears, buck teeth and full cheeks
+    Elephant, // a whole grey head: ears, trunk and tusks
 };
 
 } // namespace olc

@@ -288,7 +288,7 @@ build/open-lego-camera [options]
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
 **Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** →
-**Grinch** → **Squirrel** → **Shark** → off.
+**Grinch** → **Squirrel** → **Elephant** → **Shark** → off.
 The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
@@ -330,13 +330,14 @@ you then capture.
   normal rather than pasted in front of it.
 
   (The character is Dr. Seuss's; the geometry and palette here are ours.)
-- **Squirrel** and **Shark** are not paint at all: each replaces the whole
-  head with a 3D model. Nothing is drawn on the mesh — the mesh *drives* the
+- **Squirrel**, **Elephant** and **Shark** are not paint at all: each
+  replaces the whole head with a 3D model. Nothing is drawn on the mesh — the mesh *drives* the
   model instead. The same measured basis orients it, the head's own crown,
   chin and temples size it to the face it is worn by, and its expression works
   the jaw, the eyelids, the tongue and the cheeks.
 
-  Both are the same construction: a skull and a jaw that hinges against it,
+  All three are the same construction: a skull and a jaw that hinges against
+  it,
   each swept along the head's own longitudinal axis as a single ring grid —
   an outer arc, then a return along the mouth line — so the inside of the
   mouth closes itself and one triangle pattern winds the whole thing. Behind
@@ -364,6 +365,24 @@ you then capture.
     cross-section, the way the shark's are. That works for a shark because its
     sections are not far off round; on a cranium two head-lengths tall, the
     angle that puts an eye at the right height puts it out on the silhouette.
+  * The **elephant** is barely about its silhouette at all: what says elephant
+    is the ears and the trunk, and those are trim. The head under them is a
+    broad domed skull — wider than it is high, which is the opposite of what
+    the first attempt gave it — with small eyes set low and wide, because big
+    ones on a head that shape make it a cartoon mouse.
+
+    The trunk and the two tusks are one builder: a tube that tapers along a
+    *curving* path, where the path is integrated step by step as its direction
+    turns rather than written down as a polyline, so it bends smoothly instead
+    of having corners in it. Past a quarter turn the tip is rising, which is
+    what lets `jawOpen` raise and curl the trunk — an elephant about to
+    trumpet — and `mouthPucker` curl just its tip.
+
+    Its ears are nearly the size of its head, and getting that scale right is
+    most of what makes the filter read. They needed hand-scaling: `Style`'s
+    ear offsets are absolute eye separations rather than fractions of the
+    head, so at the values that suit a dog they came out as two small flaps up
+    by the crown.
 
   Two things about both are deliberately not anatomical, because the camera
   only ever sees them from the front:
@@ -420,11 +439,13 @@ rather than just sit on the face:
 |---|---|---|
 | jaw | `jawOpen` | the shark's jaw hinges; the warps stretch the mouth |
 | smile / frown | `mouthSmile*`, `mouthFrown*` | lifts or drops the corners of the shark's gape, curling the whole mouth line |
-| blink | **eyelid landmarks**, not a blendshape | the shark's eyes squash to slits |
+| blink | **eyelid landmarks**, not a blendshape | a lid slides down the eye of whichever model is worn |
 | brows | `browInnerUp`, `browOuterUp*`, `browDown*` | the animals prick their ears up, or lay them back |
 | tongue | `tongueOut`, and the jaw | a tongue comes out — the shark's along the floor of its jaw, the animals' out of the muzzle |
+| trunk | `jawOpen` | raises and curls the elephant's trunk |
 | jaw sideways | `jawLeft` / `jawRight` | slides the shark's lower jaw, teeth and tongue as one group |
 | cheeks | `cheekPuff` | fills out the squirrel's cheek pouches |
+| pucker | `mouthPucker` | curls the tip of the elephant's trunk |
 
 Three things are worth knowing about how these are read:
 
@@ -432,6 +453,21 @@ Three things are worth knowing about how these are read:
   so which eye is on screen-left depends on whether the preview is mirrored.
   `detect()` settles that once from the eyes and puts every pair — landmarks
   and blendshapes alike — into screen order.
+**Blinking slides a lid, it does not squash the eye.** An eyeball keeps its
+shape when you blink; a lid slides over it. Squashing was the first attempt
+and it failed twice: it scaled the bead's stand-off from the head along with
+its height, so a shut eye sank into the surface and disappeared — and even
+drawn, a slit is not what a closed eye looks like. The bead is left alone and
+its *colour* is split instead: dark where the eyeball is still uncovered,
+hide-coloured where a lid has come across it, with a dark lash line along the
+lid's edge. Shut, that is a lid-shaped bulge with a line across it.
+
+Eyes are also **solved onto the surface** rather than placed at a coordinate
+that looks right from the front. Looking right from the front is not the same
+as being on the head, and it was not: turn 40° and the far eye slid off the
+side and hung in mid-air. Pick the depth and the height — the two things worth
+controlling — and the sideways position falls out of the cross-section there.
+
 - **Blink comes from the mesh, not the blendshape.** Eyelid aperture is just
   the gap between two landmarks over the eye's own width. That costs nothing,
   works on a bundle with no blendshape head at all, and does not wobble the

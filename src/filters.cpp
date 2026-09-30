@@ -596,6 +596,7 @@ bool speciesFor(Filter f, face3d::Species& out) {
         case Filter::PigFace: out = face3d::Species::Pig; return true;
         case Filter::Grinch:  out = face3d::Species::Grinch; return true;
         case Filter::Squirrel: out = face3d::Species::Squirrel; return true;
+        case Filter::Elephant: out = face3d::Species::Elephant; return true;
         case Filter::Shark:   out = face3d::Species::Shark; return true;
         default: return false;
     }
@@ -910,8 +911,9 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
             // The painted animals colour the face mesh as well as hanging
             // parts off it. The shark and the squirrel paint nothing at all,
             // because they replace the head rather than decorate it.
-            const bool wholeHead =
-                (filter == Filter::Shark || filter == Filter::Squirrel);
+            const bool wholeHead = (filter == Filter::Shark ||
+                                    filter == Filter::Squirrel ||
+                                    filter == Filter::Elephant);
             r = wholeHead ? parts
                           : (parts.area() == 0 ? grow(f, 4, 4, 4)
                                                : (grow(f, 4, 4, 4) | parts));
@@ -957,6 +959,8 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applyAnimalFace(roi, f, off, phase, face3d::Species::Grinch);
         } else if (filter == Filter::Squirrel) {
             applyModelHead(roi, f, off, phase, face3d::Species::Squirrel);
+        } else if (filter == Filter::Elephant) {
+            applyModelHead(roi, f, off, phase, face3d::Species::Elephant);
         } else if (filter == Filter::Shark) {
             applyModelHead(roi, f, off, phase, face3d::Species::Shark);
         }
@@ -1309,7 +1313,8 @@ Filter nextFilter(Filter f) {
         case Filter::DogFace:  return Filter::PigFace;
         case Filter::PigFace:  return Filter::Grinch;
         case Filter::Grinch:   return Filter::Squirrel;
-        case Filter::Squirrel: return Filter::Shark;
+        case Filter::Squirrel: return Filter::Elephant;
+        case Filter::Elephant: return Filter::Shark;
         case Filter::Shark:    return Filter::None;
     }
     return Filter::None;
@@ -1325,6 +1330,7 @@ const char* filterName(Filter f) {
         case Filter::PigFace:  return "Pig Face";
         case Filter::Grinch:   return "Grinch";
         case Filter::Squirrel: return "Squirrel";
+        case Filter::Elephant: return "Elephant";
         case Filter::Shark:    return "Shark";
     }
     return "";

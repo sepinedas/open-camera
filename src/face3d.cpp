@@ -146,6 +146,36 @@ Style styleFor(Species sp) {
         s.noseWide = 0.95f; s.noseTall = 1.30f; s.noseYOff = -0.06f;
         s.noseAmbient = 0.70f; s.noseSpec = 0.12f; s.noseShin = 16;
         s.noseCol = Vec3f(128, 218, 150);
+    } else if (sp == Species::Elephant) {
+        // Enormous, rounded, and hanging out and *down* rather than standing
+        // up: an elephant's ear is nearly as big as its head, and getting
+        // that scale right is most of what makes the filter read at a
+        // glance. Barely hollowed -- what faces the camera is mostly the
+        // flat of the ear.
+        // NOTE the vertical numbers here are absolute eye separations, not
+        // fractions of the head, so they have to be scaled up by hand for a
+        // head this large -- left at animal values the ears come out as two
+        // small flaps near the crown.
+        s.earAttachX = 0.90f; s.earAttachY = -0.14f;
+        s.earTipX = 1.60f;    s.earTipY = 1.34f;
+        s.earHalfW = 0.76f;   s.earRound = 1.25f;
+        s.earBaseW = 0.72f;
+        s.earBowl = 0.10f;    s.earRim = 0.030f;
+        s.earShell = 0.045f;  s.earYaw = 0.30f;
+        s.earCurl = 0.10f;    s.earInnerAmt = 0.40f;
+        s.earMottle = 0.06f;
+        s.earCol = Vec3f(124, 125, 130);
+        s.earInnerCol = Vec3f(146, 143, 148);
+        s.snout = false;
+        s.noseR = 0.12f;
+        s.noseWide = 1.f; s.noseTall = 1.f; s.noseYOff = 0.f;
+        s.noseAmbient = 0.40f; s.noseSpec = 0.20f; s.noseShin = 16;
+        s.nostrilX = 0.42f; s.nostrilY = 0.f;
+        s.nostrilRx = 0.28f; s.nostrilRy = 0.34f;
+        s.nostrilDepth = 0.24f;
+        s.noseCol = Vec3f(96, 96, 102);
+        s.nostrilCol = Vec3f(52, 52, 58);
+        s.tongueCol = Vec3f(120, 108, 198);
     } else if (sp == Species::Squirrel) {
         // Big rounded ears set high on the head and turned outward. Rounded
         // right off -- a pointed lobe up there reads as a horn, which is the
@@ -693,6 +723,68 @@ Mesh buildIncisors(const Vec3f& top, float len, float halfW, float thick,
     return m;
 }
 
+// A tube that tapers along a curving path: the elephant's trunk, and each of
+// its tusks. One builder, because they differ only in how far they reach, how
+// hard they curl and what colour they are.
+//
+// The path is integrated rather than written down: at each step the direction
+// turns from `a0` toward `a1` -- angles measured from straight down toward the
+// camera -- so the thing bends continuously instead of being a polyline with
+// corners in it. Past a quarter turn the tip is rising, which is what lets the
+// trunk curl up.
+Mesh buildTaperTube(const Vec3f& base, float a0, float a1, float sideX,
+                    float length, float rBase, float rTipFrac,
+                    const Vec3f& col, float band, float ambient, float spec,
+                    int shin) {
+    Mesh m;
+    m.doubleSided = true; // it curls back on itself; winding is not worth it
+    m.ambient = ambient;
+    m.spec = spec;
+    m.shin = shin;
+
+    const int nS = 20, nSeg = 14;
+    const float step = length / (nS - 1);
+    Vec3f pos = base;
+    std::vector<std::vector<int>> ring(nS);
+    for (int si = 0; si < nS; ++si) {
+        const float t = (float)si / (nS - 1);
+        // Turns harder toward the tip, so the curl gathers at the end.
+        const float a = a0 + (a1 - a0) * t * t;
+        const Vec3f dir = norm(Vec3f(sideX, std::cos(a), -std::sin(a)));
+        // A frame across the tube. `up` is kept out of the turning plane so
+        // the cross-sections do not spin as the path bends.
+        Vec3f u = norm(Vec3f(1.f, 0.f, 0.f).cross(dir));
+        if (std::fabs(u.dot(u)) < 1e-6f) u = Vec3f(0.f, 0.f, 1.f);
+        const Vec3f v = norm(dir.cross(u));
+        const float r = rBase * (1.f - (1.f - rTipFrac) * std::pow(t, 0.85f));
+        // Ringed, the way a trunk is: a gentle banding along its length.
+        const float ribbed = 1.f + band * std::sin(t * 46.f);
+        for (int i = 0; i < nSeg; ++i) {
+            const float ang = 2.f * kPi * i / nSeg;
+            ring[si].push_back(m.add(pos + u * (r * std::cos(ang)) +
+                                         v * (r * std::sin(ang)),
+                                     col * ribbed));
+        }
+        pos += dir * step;
+    }
+    for (int si = 0; si + 1 < nS; ++si)
+        for (int i = 0; i < nSeg; ++i) {
+            const int j = (i + 1) % nSeg;
+            m.face(ring[si][i], ring[si][j], ring[si + 1][j]);
+            m.face(ring[si][i], ring[si + 1][j], ring[si + 1][i]);
+        }
+    // Cap the tip, so a curled trunk does not show a hole down its end.
+    {
+        Vec3f mid(0.f, 0.f, 0.f);
+        for (int i = 0; i < nSeg; ++i) mid += m.pos[ring[nS - 1][i]];
+        const int c0 = m.add(mid * (1.f / (float)nSeg), col * 0.9f);
+        for (int i = 0; i < nSeg; ++i)
+            m.face(c0, ring[nS - 1][i], ring[nS - 1][(i + 1) % nSeg]);
+    }
+    m.computeNormals();
+    return m;
+}
+
 // A tongue: a flattened slab swept from `base` toward `tip`, rounded off at
 // the end and given a little thickness, so it reads from the side as well as
 // head-on. Shared -- a shark's lolls out of its jaw, a dog's out of its
@@ -1036,6 +1128,56 @@ HeadShape squirrelShape(const Head& h) {
     return p;
 }
 
+HeadShape elephantShape(const Head& h) {
+    HeadShape p{};
+    p.crown = h.crownY;
+    p.chin = h.chinY;
+    const float len = h.chinY - h.crownY;
+    // A tall domed skull, wide across the brow, coming forward and down into
+    // a short face. The trunk and the ears are not in here -- they are trim,
+    // and they are what actually says elephant -- so the outline only has to
+    // be a big convincing head for them to hang off.
+    static const float kTop[kProfN]   = {-0.16f, -0.29f, -0.32f, -0.30f,
+                                         -0.22f, -0.07f,  0.13f,  0.36f, 0.50f};
+    static const float kMouth[kProfN] = { 0.74f,  0.76f,  0.78f,  0.81f,
+                                          0.85f,  0.90f,  0.96f,  1.01f, 1.04f};
+    static const float kBot[kProfN]   = { 0.92f,  0.95f,  0.96f,  0.95f,
+                                          0.93f,  0.92f,  0.95f,  1.00f, 1.06f};
+    static const float kGirth[kProfN] = { 0.82f,  0.97f,  1.00f,  1.00f,
+                                          0.96f,  0.88f,  0.74f,  0.52f, 0.f};
+    for (int i = 0; i < kProfN; ++i) {
+        p.top[i] = kTop[i];
+        p.mouth[i] = kMouth[i];
+        p.bot[i] = kBot[i];
+        p.girth[i] = kGirth[i];
+    }
+    p.sectionFn = muzzleSection;
+    p.e = h.expr;
+    const float lift = (-0.05f * h.expr.smile + 0.03f * h.expr.frown) * len;
+    for (int i = 0; i < kProfN; ++i)
+        p.mouth[i] += lift * (1.f - (float)i / (kProfN - 1));
+    float hi = p.top[0];
+    for (int i = 1; i < kProfN; ++i) hi = std::min(hi, p.top[i]);
+    p.topBack = h.crownY + hi * len;
+    p.cyBack = h.crownY + p.mouth[0] * len;
+    p.cyTip = h.crownY + p.mouth[kProfN - 1] * len;
+    p.botBack = h.crownY + p.bot[0] * len;
+    // Broad rather than tall: an elephant's head is wider than it is deep
+    // and wider than it is high, and the ears hang off the width of it.
+    p.rxMax = h.headHalfW * 1.62f;
+    p.sHinge = 0.55f;
+    p.zBack = 1.30f;
+    p.zTip = h.noseZ - 0.45f;
+    p.back = Vec3f(112, 112, 118);   // BGR: elephant grey, barely warm
+    p.flank = Vec3f(136, 137, 142);
+    p.belly = Vec3f(164, 165, 169);  // only lightly countershaded
+    p.waterA = 0.42f; p.waterB = 0.70f;
+    p.gullet = Vec3f(108, 100, 168);
+    p.fur = 0.05f;                   // hide, not fur, but far from smooth
+    p.gills = false;
+    return p;
+}
+
 // One half of the head: the skull if `upper`, the lower jaw otherwise.
 //
 // Each cross-section is a closed outline -- the outer arc, then a return along
@@ -1192,23 +1334,46 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
                 const Vec3f& nOut, float R, float side, const Vec3f& col) {
     const Vec3f u = norm(nOut.cross(Vec3f(0.f, 1.f, 0.f)));
     const Vec3f v = norm(nOut.cross(u));
-    // Blinking. Squashing the bead to a slit is what reads as an eye closing
-    // at this size -- a shark has a nictitating membrane rather than a lid,
-    // and a squirrel's lid is far too small to model. `side` is -1 for the
-    // image-left eye, which is the one blinkL describes.
-    const float blink = (side < 0.f) ? p.e.blinkL : p.e.blinkR;
-    const float lid = std::max(0.07f, 1.f - blink);
-    const int nSeg = 14, nRing = 6;
+    // Blinking. `side` is -1 for the image-left eye, which is the one blinkL
+    // describes.
+    //
+    // Closing squashes the bead vertically but leaves its stand-off from the
+    // head alone: scaling that by the lid factor too -- as this did -- sank
+    // the whole thing into the surface it sits on and a shut eye simply
+    // vanished. A closed lid bulges outward anyway, it does not sink.
+    const float blink = clampf((side < 0.f) ? p.e.blinkL : p.e.blinkR, 0.f, 1.f);
+    // Where the two lids have got to, in the same -1..1 units as the height
+    // up the eye. They start clear of it and close toward each other, meeting
+    // a little below the middle as real ones do.
+    const float hiEdge = 1.06f - 1.24f * blink;
+    const float loEdge = -1.06f + 0.94f * blink;
+    // What a lid is coloured: the hide, not black. A shade darker than the
+    // flank, the way a lid is shaded by the brow over it.
+    const Vec3f lidCol = p.flank * 0.88f;
+    // Finer than the shape alone needs: the lash line is a narrow band in
+    // vOff, and at 14x6 it fell between samples and washed out to nothing.
+    const int nSeg = 22, nRing = 10;
     std::vector<std::vector<int>> ring(nRing);
     for (int r = 0; r < nRing; ++r) {
         const float lat = 0.5f * kPi * (float)r / (nRing - 1);
         const float cr = std::cos(lat) * R, cz = std::sin(lat) * R;
         for (int i = 0; i < nSeg; ++i) {
             const float a = 2.f * kPi * i / nSeg;
+            // Height up this point of the eye, -1 at the bottom to +1 at
+            // the top, 0 at the middle. The pole is the middle of the eye,
+            // which is why cos(lat) belongs in it.
+            const float vOff = std::cos(lat) * std::sin(a);
+            // Uncovered eyeball: below the upper lid and above the lower one.
+            const float openArea = clampf((hiEdge - vOff) * 7.f, 0.f, 1.f) *
+                                   clampf((vOff - loEdge) * 7.f, 0.f, 1.f);
+            // The lash line, which follows the upper lid's edge down and is
+            // all that is left of the eye once it is shut.
+            const float lash =
+                clampf(1.f - std::fabs(vOff - hiEdge) * 5.5f, 0.f, 1.f) * blink;
+            const float dark = std::max(openArea, lash);
             ring[r].push_back(m.add(centre + u * (cr * std::cos(a)) +
-                                        v * (cr * std::sin(a) * lid) +
-                                        nOut * (cz * lid),
-                                    col));
+                                        v * (cr * std::sin(a)) + nOut * cz,
+                                    lidCol * (1.f - dark) + col * dark));
         }
     }
     for (int r = 0; r + 1 < nRing; ++r)
@@ -1217,6 +1382,33 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
             m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
             m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
         }
+}
+
+// An eye on the surface of a lofted head, at a chosen depth and height.
+//
+// Those two are what you want to control -- how far forward the eye sits and
+// how high up the face -- so they are the inputs, and the sideways position
+// is *solved* from the cross-section there rather than guessed. Guessing it
+// is what left the squirrel's far eye hanging in mid-air as soon as the head
+// turned: a point that looks like it is on the surface from the front need
+// not be on it at all.
+void addEyeAt(Mesh& m, const HeadShape& p, float sEye, float yEye, float R,
+              float side, float faceFwd, const Vec3f& col) {
+    const Section c = sectionAt(sEye, p);
+    // Where this height falls on the section's ellipse, above or below the
+    // mouth line, as a fraction of the radius on that side.
+    const float dy = c.cy - yEye;
+    const float ry = std::max(1e-3f, dy >= 0.f ? c.ryUp : c.ryLo);
+    const float n = clampf(dy / ry, -0.97f, 0.97f);
+    const float fx = std::sqrt(std::max(0.f, 1.f - n * n));
+    const Vec3f centre(side * c.rx * fx, yEye, c.z);
+    // The ellipse's own outward normal, leaned toward the camera by
+    // `faceFwd`: an eye on a rounded head should look a little forward rather
+    // than straight out to the side, and the bead is anchored on the surface
+    // either way.
+    const Vec3f nOut = norm(Vec3f(side * fx / std::max(1e-3f, c.rx), -n / ry,
+                                  -faceFwd));
+    addEyeBead(m, p, centre, nOut, R, side, col);
 }
 
 // A pair of eye beads set into the flank of a lofted head. `sEye` is how far
@@ -1423,21 +1615,20 @@ void addSquirrelTrim(std::vector<Mesh>& out, const Head& head,
     out.push_back(buildEar(-1.f, wig, eh, st));
     out.push_back(buildEar(+1.f, wig, eh, st));
 
-    // Big eyes, placed by coordinate: well up the face, set wide, and on the
-    // front of the cranium so both of them read from straight on.
+    // Big eyes, well up the face and on the front of the cranium so both of
+    // them read from straight on.
     {
         Mesh eyes;
         eyes.doubleSided = true;
         eyes.ambient = 0.26f;
-        eyes.spec = 0.60f;
-        eyes.shin = 42;
+        // Modest gloss: the bead is the lid as well as the eyeball, and at a
+        // wet eyeball's shine a closed lid comes out looking like a jewel.
+        eyes.spec = 0.34f;
+        eyes.shin = 24;
         const float R = 0.21f * p.rxMax;
-        for (float side : {-1.f, 1.f}) {
-            const Vec3f c(side * 0.52f * p.rxMax, head.crownY + 0.30f * len,
-                          -0.10f);
-            const Vec3f nOut = norm(Vec3f(side * 0.50f, -0.16f, -0.85f));
-            addEyeBead(eyes, p, c, nOut, R, side, Vec3f(18, 16, 20));
-        }
+        for (float side : {-1.f, 1.f})
+            addEyeAt(eyes, p, 0.52f, head.crownY + 0.26f * len, R, side, 0.85f,
+                     Vec3f(18, 16, 20));
         eyes.computeNormals();
         out.push_back(std::move(eyes));
     }
@@ -1475,16 +1666,91 @@ void addSquirrelTrim(std::vector<Mesh>& out, const Head& head,
     }
 }
 
+// Everything an elephant has that the loft does not: the ears, which are
+// nearly the size of the head; the trunk, which curls up as the mouth opens;
+// a pair of tusks flanking it; and small eyes set low and wide.
+void addElephantTrim(std::vector<Mesh>& out, const Head& head,
+                     const HeadShape& p) {
+    const Style st = styleFor(Species::Elephant);
+    const float len = head.chinY - head.crownY;
+
+    // Ears, on the sides of the model's own skull rather than the real head's.
+    Head eh = head;
+    // Anchored at the side of the head at about eye level, not up on the
+    // crown: hung from the crown the fans splay upward like wings.
+    eh.crownY = p.topBack + 0.47f * len;
+    eh.headHalfW = p.rxMax;
+    const float wig = 0.04f * std::sin((float)head.phase * 0.09f) +
+                      0.22f * head.expr.browUp - 0.18f * head.expr.browDown;
+    out.push_back(buildEar(-1.f, wig, eh, st));
+    out.push_back(buildEar(+1.f, wig, eh, st));
+
+    // Small eyes, low and wide -- an elephant's are tiny for the size of its
+    // head, and putting big ones on it makes it a cartoon mouse.
+    {
+        Mesh eyes;
+        eyes.doubleSided = true;
+        eyes.ambient = 0.28f;
+        eyes.spec = 0.32f;
+        eyes.shin = 24;
+        // Well forward on the head, not level with it: at mid-depth the
+        // solved position lands exactly where the ear attaches and the eyes
+        // are buried behind the fans. Further forward the head is narrower,
+        // so they sit inboard of the ear roots and in front of them.
+        const float R = 0.10f * p.rxMax;
+        for (float side : {-1.f, 1.f})
+            addEyeAt(eyes, p, 0.74f, head.crownY + 0.42f * len, R, side, 0.62f,
+                     Vec3f(38, 34, 34));
+        eyes.computeNormals();
+        out.push_back(std::move(eyes));
+    }
+
+    // The trunk. It hangs from the middle of the face with a slight forward
+    // bow, and opening the mouth raises and curls it -- an elephant about to
+    // trumpet. Puckering curls just the tip, which is the bit that actually
+    // moves most on a real one.
+    const float raise = clampf(head.expr.jawOpen, 0.f, 1.f);
+    const float tipCurl = clampf(head.expr.pucker, 0.f, 1.f);
+    const Vec3f trunkBase(0.f, head.crownY + 0.52f * len, p.zTip + 0.18f);
+    out.push_back(buildTaperTube(trunkBase,
+                                 0.18f,                       // hangs down
+                                 // Past a half turn the tip is not just
+                                 // rising but coming back over, which is what
+                                 // makes the raise read head-on instead of
+                                 // merely foreshortening the trunk.
+                                 0.26f + 2.70f * raise + 0.60f * tipCurl,
+                                 0.f,
+                                 (1.38f + 0.12f * raise) * len,
+                                 0.29f * p.rxMax, 0.34f,
+                                 Vec3f(128, 129, 134), 0.035f,
+                                 0.44f, 0.16f, 14));
+
+    // Tusks, flanking the trunk: shorter, splayed outward, curling forward
+    // and up, and ivory rather than grey.
+    for (float side : {-1.f, 1.f}) {
+        const Vec3f tb(side * 0.46f * p.rxMax, head.crownY + 0.72f * len,
+                       p.zTip + 0.14f);
+        out.push_back(buildTaperTube(tb, 0.22f, 2.25f, side * 0.42f,
+                                     0.95f * len, 0.115f * p.rxMax, 0.10f,
+                                     Vec3f(214, 226, 234), 0.f,
+                                     0.58f, 0.34f, 26));
+    }
+}
+
 std::vector<Mesh> buildMeshes(const Head& head, Species species) {
 
     std::vector<Mesh> meshes;
-    if (species == Species::Shark || species == Species::Squirrel) {
+    if (species == Species::Shark || species == Species::Squirrel ||
+        species == Species::Elephant) {
         const bool shark = (species == Species::Shark);
-        const HeadShape sp = shark ? sharkShape(head) : squirrelShape(head);
+        const HeadShape sp = shark      ? sharkShape(head)
+                             : (species == Species::Squirrel)
+                                 ? squirrelShape(head)
+                                 : elephantShape(head);
         // A little always ajar, so the teeth show even with the mouth shut,
         // then opened the rest of the way by the jawOpen blendshape.
         const float ang = (shark ? 0.07f : 0.04f) +
-                          (shark ? 0.34f : 0.26f) *
+                          (shark ? 0.34f : 0.22f) *
                               clampf(head.expr.jawOpen, 0.f, 1.f);
         const Section hinge = sectionAt(sp.sHinge, sp);
         const Vec3f pivot(0.f, hinge.cy, hinge.z);
@@ -1518,12 +1784,14 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         meshes.push_back(std::move(tongue));
         if (shark) {
             // The same parameters the eyes had when they lived inside
-            // buildSharkTrim, before the squirrel needed them too.
+            // buildSharkTrim, before the other two needed them too.
             meshes.push_back(buildEyeBeads(sp, 0.34f, 0.52f, 0.140f * sp.rxMax,
-                                           Vec3f(16, 15, 18), 0.30f, 0.55f, 40));
+                                           Vec3f(16, 15, 18), 0.30f, 0.34f, 26));
             meshes.push_back(buildSharkTrim(sp));
-        } else {
+        } else if (species == Species::Squirrel) {
             addSquirrelTrim(meshes, head, sp);
+        } else {
+            addElephantTrim(meshes, head, sp);
         }
     } else {
         const Style st = styleFor(species);
