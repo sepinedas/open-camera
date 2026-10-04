@@ -60,6 +60,8 @@ private:
     void handleFingerMotion(const SDL_TouchFingerEvent& f);
     void handleFingerUp(const SDL_TouchFingerEvent& f);
     double fingerSpread() const; // pixel distance between the two active fingers
+    // Drop fingers whose lift we never saw (see the definition).
+    void pruneStaleFingers(SDL_TouchID touch, Uint32 now);
 
     // --- overlays ---
     // Scaled bitmap text (SDL2_gfx 8x8 font blown up); centre horizontally on x
@@ -92,6 +94,10 @@ private:
     // Move to the next attached camera (Pi camera <-> USB webcam, or between
     // several webcams). No-op with only one camera.
     void switchCamera();
+    // Camera::open(), retried once after a short pause (see the definition).
+    std::unique_ptr<Camera> openWithRetry(const CameraSource& s);
+    // Re-enumerate sources_ (webcams hot-plugged since startup come and go).
+    void refreshSources();
     void playCurrentVideo();
     void goHome();          // leave the camera for the welcome screen
     void enterSleep();      // blank the screen (and power the panel off on a Pi)
@@ -115,8 +121,9 @@ private:
     Config cfg_;
     std::unique_ptr<Camera> cam_;
     // Every camera found at startup, in preference order; cam_ is open on one
-    // of them and the switch button rotates through the rest. A source that
-    // fails to open is dropped, so this only ever holds cameras that work.
+    // of them and the switch button rotates through the rest. A Pi camera that
+    // fails to open at startup is dropped (sources() lists it unprobed);
+    // webcams are re-enumerated on each switch, see refreshSources().
     std::vector<CameraSource> sources_;
     std::unique_ptr<Gallery> gallery_;
     std::unique_ptr<Battery> battery_; // null when no UPS HAT (D) is fitted
@@ -164,7 +171,7 @@ private:
     std::string thumbPath_;
 
     // Pinch-to-zoom and single-finger tap detection.
-    struct Finger { float x, y; };
+    struct Finger { float x, y; Uint32 lastMs; }; // lastMs: its latest event
     std::map<SDL_FingerID, Finger> fingers_;
     bool pinching_ = false;
     double pinchStartDist_ = 0.0;
@@ -173,7 +180,7 @@ private:
     bool tapCandidate_ = false;      // one finger down, not yet a drag/pinch
     SDL_FingerID tapFinger_ = 0;
     float tapStartX_ = 0, tapStartY_ = 0;
-    Uint32 tapStartMs_ = 0;
+    Uint32 tapStartMs_ = 0;          // event time, not processing time
 };
 
 } // namespace olc

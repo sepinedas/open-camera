@@ -58,13 +58,11 @@ bool Gallery::currentIsVideo() const {
 }
 
 void Gallery::next() {
-    if (empty()) return;
-    index_ = (index_ + 1) % count();
+    if (!atOldest()) ++index_;
 }
 
 void Gallery::prev() {
-    if (empty()) return;
-    index_ = (index_ - 1 + count()) % count();
+    if (!atNewest()) --index_;
 }
 
 void Gallery::deleteCurrent() {

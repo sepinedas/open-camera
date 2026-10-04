@@ -22,8 +22,14 @@ public:
     const std::string& current() const { return files_[index_]; }
     bool currentIsVideo() const;
 
+    // Step towards older (next) or newer (prev) items. The list does not wrap:
+    // the newest item is the left end of the strip and the oldest the right
+    // end, so the left arrow at the newest photo (or the right one at the
+    // oldest) stays put instead of jumping to the far end.
     void next();
     void prev();
+    bool atNewest() const { return index_ <= 0; }
+    bool atOldest() const { return index_ >= count() - 1; }
 
     // Jump to the most recent item (files are stored newest-first).
     void selectNewest() { index_ = 0; }

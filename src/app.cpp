@@ -616,16 +616,39 @@ double App::fingerSpread() const {
     return std::sqrt(dx * dx + dy * dy);
 }
 
+// A finger whose SDL_FINGERUP never reaches us -- the touch controller or the
+// evdev layer drops it now and then -- would otherwise sit in fingers_ for
+// good. Every later touch then counts as a second finger: it starts a pinch,
+// never becomes a tap, and the menu looks dead until the app is restarted.
+// So before tracking a new touch, forget any finger SDL no longer reports as
+// down, and any that has sent nothing for longer than a real touch plausibly
+// rests motionless (in case SDL lost the lift as well).
+void App::pruneStaleFingers(SDL_TouchID touch, Uint32 now) {
+    constexpr Uint32 kQuietMs = 2500;
+    const int n = SDL_GetNumTouchFingers(touch);
+    for (auto it = fingers_.begin(); it != fingers_.end();) {
+        bool down = false;
+        for (int i = 0; i < n && !down; ++i) {
+            const SDL_Finger* sf = SDL_GetTouchFinger(touch, i);
+            down = sf && sf->id == it->first;
+        }
+        if (!down || now - it->second.lastMs > kQuietMs) it = fingers_.erase(it);
+        else ++it;
+    }
+    if (fingers_.size() < 2) pinching_ = false;
+}
+
 void App::handleFingerDown(const SDL_TouchFingerEvent& f) {
+    pruneStaleFingers(f.touchId, f.timestamp);
     menu_.wake();
-    fingers_[f.fingerId] = {f.x, f.y};
+    fingers_[f.fingerId] = {f.x, f.y, f.timestamp};
     if (fingers_.size() == 1) {
         // Possible tap; confirmed on finger-up if it stays put and no 2nd finger.
         tapCandidate_ = true;
         tapFinger_ = f.fingerId;
         tapStartX_ = f.x;
         tapStartY_ = f.y;
-        tapStartMs_ = SDL_GetTicks();
+        tapStartMs_ = f.timestamp;
     } else if (fingers_.size() == 2) {
         // A second finger starts a pinch and cancels the pending tap.
         tapCandidate_ = false;
@@ -638,7 +661,7 @@ void App::handleFingerDown(const SDL_TouchFingerEvent& f) {
 
 void App::handleFingerMotion(const SDL_TouchFingerEvent& f) {
     auto it = fingers_.find(f.fingerId);
-    if (it != fingers_.end()) it->second = {f.x, f.y};
+    if (it != fingers_.end()) it->second = {f.x, f.y, f.timestamp};
 
     if (pinching_ && fingers_.size() >= 2 && pinchStartDist_ > 1.0) {
         double z = pinchStartZoom_ * (fingerSpread() / pinchStartDist_);
@@ -655,8 +678,11 @@ void App::handleFingerUp(const SDL_TouchFingerEvent& f) {
     fingers_.erase(f.fingerId);
     if (fingers_.size() < 2) pinching_ = false;
 
+    // Timed on the events' own timestamps: a slow frame (a camera switch, a
+    // heavy filter) can hold the up event in the queue well past the limit, and
+    // timing it on arrival used to throw away a perfectly quick tap.
     if (tapCandidate_ && f.fingerId == tapFinger_ && fingers_.empty()) {
-        if (SDL_GetTicks() - tapStartMs_ < 700) {
+        if (f.timestamp - tapStartMs_ < 700) {
             int px, py, vx, vy;
             mapTouch(f.x, f.y, px, py);
             physicalToView(px, py, vx, vy);
@@ -738,6 +764,7 @@ void App::dispatch(Action a) {
             switchCamera();
             break;
         case Action::StartCamera:
+            refreshSources(); // a webcam plugged in since startup gets the button
             mode_ = Mode::Camera;
             menu_.wake();
             break;
@@ -790,12 +817,46 @@ void App::capturePhoto() {
     refreshThumbnail();           // update the gallery-button preview
 }
 
+// Open `s`, giving it one more chance after a short pause: the first open of a
+// device that was only just released (by us, a moment ago) often fails.
+std::unique_ptr<Camera> App::openWithRetry(const CameraSource& s) {
+    if (auto cam = Camera::open(cfg_, s)) return cam;
+    SDL_Delay(400);
+    return Camera::open(cfg_, s);
+}
+
+// Re-read the attached webcams. The Pi camera is kept only if startup proved
+// it is there, because sources() lists it whether or not a sensor is fitted.
+// The live camera always stays, so the rotation can find its place.
+void App::refreshSources() {
+    const bool havePi = std::any_of(sources_.begin(), sources_.end(),
+                                    [](const CameraSource& s) {
+                                        return s.kind == CameraKind::PiCam;
+                                    });
+    std::vector<CameraSource> fresh;
+    for (const CameraSource& s : Camera::sources(cfg_))
+        if (s.kind != CameraKind::PiCam || havePi) fresh.push_back(s);
+    if (cam_ && std::find(fresh.begin(), fresh.end(), cam_->source()) == fresh.end())
+        fresh.insert(fresh.begin(), cam_->source());
+    sources_ = std::move(fresh);
+}
+
 // Move to the next attached camera. The live device is released *before* the
 // next one is opened: two USB cameras on one controller can easily want more
 // bandwidth than the bus has, and holding both open would make the second fail
 // to start for a reason that has nothing to do with the second.
+//
+// A camera that won't start here is skipped, not forgotten. Releasing a device
+// is not instant -- libcamera and the UVC driver both take a moment to let go
+// -- so a camera that was live a second ago routinely refuses its first
+// reopen. Dropping it on that used to take the switch button away for the rest
+// of the session as soon as the list fell to one camera. Webcams are
+// re-enumerated instead, so one that really was unplugged leaves the list (and
+// one plugged in since startup joins it).
 void App::switchCamera() {
-    if (!cam_ || sources_.size() < 2) return;
+    if (!cam_) return;
+    refreshSources();
+    if (sources_.size() < 2) return;
 
     const CameraSource current = cam_->source();
     const double zoom = cam_->zoom(); // the user's framing, not the device's
@@ -804,30 +865,15 @@ void App::switchCamera() {
 
     cam_.reset();
     std::unique_ptr<Camera> next;
-    std::vector<CameraSource> dead;
     for (std::size_t step = 1; step < sources_.size() && !next; ++step) {
         const CameraSource& s = sources_[(at + step) % sources_.size()];
-        next = Camera::open(cfg_, s);
-        if (!next) {
-            std::cerr << "camera: " << s.label << " would not start\n";
-            dead.push_back(s);
-        }
-    }
-
-    // Forget whatever refused to start, so the button stops offering it (and
-    // so a dead entry doesn't cost a failed open on every future switch).
-    if (!dead.empty()) {
-        sources_.erase(std::remove_if(sources_.begin(), sources_.end(),
-                                      [&](const CameraSource& s) {
-                                          return std::find(dead.begin(), dead.end(),
-                                                           s) != dead.end();
-                                      }),
-                       sources_.end());
+        next = openWithRetry(s);
+        if (!next) std::cerr << "camera: " << s.label << " would not start\n";
     }
 
     if (!next) {
         // Nothing else worked: go back to the camera that was already running.
-        next = Camera::open(cfg_, current);
+        next = openWithRetry(current);
         if (!next) {
             std::cerr << "camera: lost " << current.label
                       << " and no other camera could be opened\n";
@@ -1166,8 +1212,15 @@ void App::renderGallery() {
 
     Uint8 a = menu_.awake() ? menu_.alpha() : (Uint8)0;
     if (a > 0) {
+        // Newest is on the left: an arrow with nothing further that way is
+        // drawn faint (it stays in place so the row never shifts under a
+        // finger tapping through the photos).
         auto btns = buttonsFor(Mode::Gallery);
-        for (const auto& b : btns) Menu::drawButton(ren_, b, a);
+        for (const auto& b : btns) {
+            bool dead = (b.action == Action::Prev && gallery_->atNewest()) ||
+                        (b.action == Action::Next && gallery_->atOldest());
+            Menu::drawButton(ren_, b, dead ? (Uint8)(a / 3) : a);
+        }
     }
 
     drawBatteryBadge();
