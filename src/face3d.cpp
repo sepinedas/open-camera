@@ -785,6 +785,56 @@ Mesh buildTaperTube(const Vec3f& base, float a0, float a1, float sideX,
     return m;
 }
 
+// A cone with an elliptical base, from `base` along `dir` to a point: the
+// dinosaur's spikes and horns. `rA` is the base radius across `dir` in the
+// head's x, `rB` the other way, so a spike can be a thin plate rather than a
+// round peg. The base is sunk a little below where it is placed, so the cone
+// grows out of the surface instead of perching on it.
+//
+// Leaned back on itself as it rises (`sweep`, along `back`), so it reads as a
+// spike rather than a traffic cone. Coloured from `col` at the root to `tipCol`
+// at the point.
+Mesh buildCone(const Vec3f& base, const Vec3f& dir, const Vec3f& back,
+               float height, float rA, float rB, float sweep,
+               const Vec3f& col, const Vec3f& tipCol) {
+    Mesh m;
+    m.doubleSided = true;
+    m.ambient = 0.46f;
+    m.spec = 0.22f;
+    m.shin = 18;
+    const Vec3f d = norm(dir);
+    Vec3f a = norm(Vec3f(1.f, 0.f, 0.f) - d * d[0]);
+    if (a.dot(a) < 1e-6f) a = Vec3f(0.f, 0.f, 1.f);
+    const Vec3f b = norm(d.cross(a));
+    const int nSeg = 14, nT = 6;
+    std::vector<std::vector<int>> ring(nT);
+    for (int ti = 0; ti < nT; ++ti) {
+        const float t = (float)ti / (nT - 1) * 0.92f; // stop short; apex below
+        const float r = 1.f - t;
+        const Vec3f c = base + d * (height * (t - 0.12f)) +
+                        back * (sweep * height * t * t);
+        const Vec3f cc = col * (1.f - t) + tipCol * t;
+        for (int i = 0; i < nSeg; ++i) {
+            const float ang = 2.f * kPi * i / nSeg;
+            ring[ti].push_back(m.add(c + a * (rA * r * std::cos(ang)) +
+                                         b * (rB * r * std::sin(ang)),
+                                     cc));
+        }
+    }
+    for (int ti = 0; ti + 1 < nT; ++ti)
+        for (int i = 0; i < nSeg; ++i) {
+            const int j = (i + 1) % nSeg;
+            m.face(ring[ti][i], ring[ti][j], ring[ti + 1][j]);
+            m.face(ring[ti][i], ring[ti + 1][j], ring[ti + 1][i]);
+        }
+    const int apex = m.add(base + d * (height * 0.88f) + back * (sweep * height),
+                           tipCol);
+    for (int i = 0; i < nSeg; ++i)
+        m.face(ring[nT - 1][i], ring[nT - 1][(i + 1) % nSeg], apex);
+    m.computeNormals();
+    return m;
+}
+
 // A tongue: a flattened slab swept from `base` toward `tip`, rounded off at
 // the end and given a little thickness, so it reads from the side as well as
 // head-on. Shared -- a shark's lolls out of its jaw, a dog's out of its
@@ -864,6 +914,7 @@ struct HeadShape;
 Section sectionAt(float s, const HeadShape& p);
 Section coneSection(float s, const HeadShape& p);   // the shark's outline
 Section muzzleSection(float s, const HeadShape& p); // the squirrel's
+Section domedSection(float s, const HeadShape& p);  // the dinosaur's
 
 // A whole head, in place of the one that is there: a skull and a jaw that
 // hinges against it, swept along the head's own longitudinal axis from s = 0
@@ -913,6 +964,10 @@ struct HeadShape {
     Vec3f gullet;          // the inside of the mouth
     float fur;             // per-vertex break-up: 0 for skin, more for fur
     bool gills;
+    // Dark bands across the back, 0 for none. The dinosaur's: on a plain
+    // green hide the loft reads as a smooth toy, and banding is what turns it
+    // into a reptile's skin.
+    float stripes;
 
     Expression e;          // what the face wearing it is doing
 };
@@ -1025,6 +1080,30 @@ Section muzzleSection(float s, const HeadShape& p) {
     return c;
 }
 
+// The dinosaur's: the squirrel's control points, but with the end of the
+// snout capped by a dome.
+//
+// Closing the outline by taking the girth to zero leaves the height where it
+// was, so the head ends in a vertical blade -- invisible on the squirrel,
+// whose nose sits over it, but on a broad blunt snout it showed as a crease
+// down the middle of the face. Past `kCap` this holds the last full section
+// and shrinks it on a quarter ellipse in every direction at once, which
+// rounds the front off however the control points end.
+Section domedSection(float s, const HeadShape& p) {
+    constexpr float kCap = 0.86f;
+    const float t = clampf(s, 0.f, 1.f);
+    if (t <= kCap) return muzzleSection(t, p);
+    Section c = muzzleSection(kCap, p);
+    const float u = (t - kCap) / (1.f - kCap);
+    const float f = std::sqrt(std::max(0.f, 1.f - u * u));
+    c.z = p.zBack + (p.zTip - p.zBack) * t;
+    c.rx *= f;
+    c.ryUp *= f;
+    c.ryLo *= f;
+    c.gape = gapeAt(t, p);
+    return c;
+}
+
 Section sectionAt(float s, const HeadShape& p) { return p.sectionFn(s, p); }
 
 // Countershading: dark along the back, abruptly white underneath, which is
@@ -1062,6 +1141,15 @@ Vec3f hideAt(float v, float s, float ax, const HeadShape& p) {
         const float slit = clampf((0.42f - d) * 5.f, 0.f, 1.f) *
                            clampf((ax - 0.30f) * 3.f, 0.f, 1.f);
         c = c * (1.f - slit * 0.85f) + Vec3f(52, 50, 54) * (slit * 0.85f);
+    }
+    // Bands across the back, running down the flanks and fading out before
+    // the belly. Wavy rather than straight, so they read as markings on a
+    // hide and not as the ribs of a tube.
+    if (p.stripes > 0.f && v < p.waterB) {
+        const float ph = s * 6.5f + 0.30f * std::sin(ax * 4.f);
+        const float band = clampf((std::sin(ph * 2.f * kPi) - 0.35f) * 4.f, 0.f, 1.f);
+        const float fade = clampf((p.waterB - v) * 6.f, 0.f, 1.f);
+        c = c * (1.f - p.stripes * band * fade);
     }
     return c;
 }
@@ -1198,6 +1286,71 @@ HeadShape elephantShape(const Head& h) {
     return p;
 }
 
+HeadShape dinosaurShape(const Head& h) {
+    HeadShape p{};
+    p.crown = h.crownY;
+    p.chin = h.chinY;
+    const float len = h.chinY - h.crownY;
+    // A T. rex, cartoon proportions: a deep skull over a long, blunt, boxy
+    // snout. As with the squirrel the snout has to *hang* -- head-on and
+    // orthographic, a snout that only points forward hides inside the skull
+    // -- so the mouth line and the jaw run down well past the chin, which is
+    // what puts that great slab of a face on screen.
+    // The front of the snout is rounded off by domedSection, past the last
+    // full cross-section, so the final column only steers the spline.
+    static const float kTop[kProfN]   = {-0.12f, -0.22f, -0.24f, -0.18f,
+                                         -0.04f,  0.14f,  0.30f,  0.44f, 0.54f};
+    static const float kMouth[kProfN] = { 0.70f,  0.72f,  0.76f,  0.82f,
+                                          0.90f,  0.98f,  1.05f,  1.10f, 1.10f};
+    static const float kBot[kProfN]   = { 0.94f,  1.00f,  1.04f,  1.08f,
+                                          1.13f,  1.18f,  1.22f,  1.24f, 1.24f};
+    // Wide at the back, where the jaw muscles are, then stepping in to a
+    // snout about half as wide that holds its width and is closed off
+    // bluntly -- a T. rex, rather than the shark's taper to a point. The step
+    // is what makes the snout read head-on as a separate form below the
+    // cheeks instead of the whole head being one egg.
+    static const float kGirth[kProfN] = { 0.84f,  1.00f,  1.00f,  0.86f,
+                                          0.68f,  0.58f,  0.54f,  0.50f, 0.46f};
+    for (int i = 0; i < kProfN; ++i) {
+        p.top[i] = kTop[i];
+        p.mouth[i] = kMouth[i];
+        p.bot[i] = kBot[i];
+        p.girth[i] = kGirth[i];
+    }
+    p.sectionFn = domedSection;
+    p.e = h.expr;
+    // Corners up for a smile and down for a sad face; the front of the snout
+    // stays put, so the line between them curls into a grin or a sulk.
+    const float lift = (-0.16f * h.expr.smile + 0.11f * h.expr.sad) * len;
+    for (int i = 0; i < kProfN; ++i) {
+        const float t = (float)i / (kProfN - 1);
+        p.mouth[i] += lift * std::pow(1.f - t, 0.55f);
+    }
+    float hi = p.top[0];
+    for (int i = 1; i < kProfN; ++i) hi = std::min(hi, p.top[i]);
+    p.topBack = h.crownY + hi * len;
+    p.cyBack = h.crownY + p.mouth[0] * len;
+    p.cyTip = h.crownY + p.mouth[kProfN - 1] * len;
+    p.botBack = h.crownY + p.bot[0] * len;
+    p.rxMax = h.headHalfW * 1.42f;
+    // Hinged far back: a T. rex's gape runs most of the length of its head,
+    // and that long row of teeth is what it is.
+    p.sHinge = 0.26f - 0.06f * h.expr.smile;
+    p.zBack = 1.25f;
+    p.zTip = h.noseZ - 1.05f;
+    p.back = Vec3f(46, 104, 62);     // BGR: deep forest green
+    p.flank = Vec3f(64, 150, 92);
+    p.belly = Vec3f(138, 206, 196);  // pale yellow-green throat
+    p.waterA = 0.40f; p.waterB = 0.66f;
+    p.gullet = Vec3f(100, 96, 170);
+    // Kept low: the variation is per loft vertex, and head-on the loft's
+    // lines all radiate from the snout, so much more reads as rays.
+    p.fur = 0.04f;
+    p.gills = false;
+    p.stripes = 0.34f;
+    return p;
+}
+
 // One half of the head: the skull if `upper`, the lower jaw otherwise.
 //
 // Each cross-section is a closed outline -- the outer arc, then a return along
@@ -1283,17 +1436,19 @@ Mesh buildHeadHalf(const HeadShape& p, bool upper) {
 
 // A row of teeth along one jaw's mouth line: little three-sided spikes
 // standing on the outer edge of the gape, pointing into the mouth.
-Mesh buildSharkTeeth(const HeadShape& p, bool upper) {
+//
+// The dinosaur has them too, fewer and bigger and a shade yellower, so the
+// count, the size and the colours are the caller's.
+Mesh buildSharkTeeth(const HeadShape& p, bool upper, int nTooth = 11,
+                     float size = 1.f, Vec3f enamel = Vec3f(238, 243, 246),
+                     Vec3f root = Vec3f(196, 206, 214)) {
     Mesh m;
     m.doubleSided = true; // far too small to be worth getting winding right
     m.ambient = 0.62f;
     m.spec = 0.30f;
     m.shin = 26;
-    const Vec3f enamel(238, 243, 246);
-    const Vec3f root(196, 206, 214);
     const float dir = upper ? 1.f : -1.f; // teeth point across the gape
 
-    const int nTooth = 11;
     for (int i = 0; i < nTooth; ++i) {
         // Spread from just inside the mouth corner to near the snout's point.
         const float s = p.sHinge + 0.10f +
@@ -1303,7 +1458,7 @@ Mesh buildSharkTeeth(const HeadShape& p, bool upper) {
         const Section cA = sectionAt(std::max(0.f, s - step), p);
         const Section cB = sectionAt(std::min(1.f, s + step), p);
         // Teeth shrink toward the point of the snout, as they do on a real jaw.
-        const float len = (upper ? 0.26f : 0.22f) * (p.chin - p.cyBack) *
+        const float len = size * (upper ? 0.26f : 0.22f) * (p.chin - p.cyBack) *
                           (0.55f + 0.45f * (1.f - s));
         const float half = 0.40f;
 
@@ -1329,7 +1484,11 @@ Mesh buildSharkTeeth(const HeadShape& p, bool upper) {
 // Lies along the floor of the jaw and slides forward out of the mouth. Built
 // in the jaw's frame and rotated with it, so it swings down when the jaw does
 // instead of hanging in the air where the mouth used to be.
-Mesh buildMuzzleTongue(const HeadShape& p) {
+//
+// `maxReach` caps how far along the mouth it gets, as a fraction of the way
+// from its root to the point of the snout. The dinosaur's gape runs nearly the
+// length of its head, so uncapped the tongue came out longer than the head.
+Mesh buildMuzzleTongue(const HeadShape& p, float maxReach = 10.f) {
     const float s0 = p.sHinge + 0.10f;
     const Section a = sectionAt(s0, p);
     // Out past the teeth only as far as the tongue is actually out, and only
@@ -1342,7 +1501,8 @@ Mesh buildMuzzleTongue(const HeadShape& p) {
     // tongueOut above its noise floor. See the note on it in filters.cpp.
     const float gape = clampf((p.e.jawOpen - 0.55f) / 0.40f, 0.f, 1.f);
     const float out = std::max(p.e.tongue, 0.55f * gape);
-    const float reach = 0.45f + 1.15f * out * (0.40f + 0.60f * p.e.jawOpen);
+    const float reach = std::min(maxReach,
+                                 0.45f + 1.15f * out * (0.40f + 0.60f * p.e.jawOpen));
     const Vec3f base(0.f, a.cy, a.z);
     const Vec3f far(0.f, p.cyTip, p.zTip);
     const Vec3f tip = base + (far - base) * reach;
@@ -1358,8 +1518,12 @@ Mesh buildMuzzleTongue(const HeadShape& p) {
 // On a cranium two head-lengths tall the angle that puts an eye at the right
 // height puts it right out on the silhouette, so the squirrel places its eyes
 // by coordinate instead.
+//
+// With an `iris`, the open eye is that colour with a vertical slit of `col`
+// down the middle -- a reptile's eye -- instead of solid `col`.
 void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
-                const Vec3f& nOut, float R, float side, const Vec3f& col) {
+                const Vec3f& nOut, float R, float side, const Vec3f& col,
+                const Vec3f* iris = nullptr) {
     const Vec3f u = norm(nOut.cross(Vec3f(0.f, 1.f, 0.f)));
     const Vec3f v = norm(nOut.cross(u));
     // Blinking. `side` is -1 for the image-left eye, which is the one blinkL
@@ -1403,9 +1567,19 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
             const float lash =
                 clampf(1.f - std::fabs(vOff - hiEdge) * 5.5f, 0.f, 1.f) * blink;
             const float dark = std::max(openArea, lash);
+            Vec3f eye = col;
+            if (iris) {
+                // Across the eye, -1..1. The slit is narrow and runs the full
+                // height, and it is the only dark part of an open eye.
+                const float hOff = std::cos(lat) * std::cos(a);
+                const float slit = clampf((0.17f - std::fabs(hOff)) * 14.f, 0.f, 1.f);
+                eye = *iris * (1.f - slit) + col * slit;
+                // A closed eye shows only its lash line, which stays dark.
+                eye = eye * (1.f - lash) + col * lash;
+            }
             ring[r].push_back(m.add(centre + u * (cr * std::cos(a)) +
                                         v * (cr * std::sin(a)) + nOut * cz,
-                                    lidCol * (1.f - dark) + col * dark));
+                                    lidCol * (1.f - dark) + eye * dark));
         }
     }
     for (int r = 0; r + 1 < nRing; ++r)
@@ -1425,7 +1599,8 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
 // turned: a point that looks like it is on the surface from the front need
 // not be on it at all.
 void addEyeAt(Mesh& m, const HeadShape& p, float sEye, float yEye, float R,
-              float side, float faceFwd, const Vec3f& col) {
+              float side, float faceFwd, const Vec3f& col,
+              const Vec3f* iris = nullptr) {
     const Section c = sectionAt(sEye, p);
     // Where this height falls on the section's ellipse, above or below the
     // mouth line, as a fraction of the radius on that side.
@@ -1440,7 +1615,7 @@ void addEyeAt(Mesh& m, const HeadShape& p, float sEye, float yEye, float R,
     // either way.
     const Vec3f nOut = norm(Vec3f(side * fx / std::max(1e-3f, c.rx), -n / ry,
                                   -faceFwd));
-    addEyeBead(m, p, centre, nOut, R, side, col);
+    addEyeBead(m, p, centre, nOut, R, side, col, iris);
 }
 
 // A pair of eye beads set into the flank of a lofted head. `sEye` is how far
@@ -1780,13 +1955,98 @@ void addElephantTrim(std::vector<Mesh>& out, const Head& head,
     }
 }
 
+// Everything a T. rex has that the loft does not: amber slit-pupilled eyes
+// under heavy brow horns, a row of spikes down the middle of the skull, and
+// nostrils on top of the snout. The teeth are the shark's, fewer and bigger.
+void addDinosaurTrim(std::vector<Mesh>& out, const Head& head,
+                     const HeadShape& p) {
+    const float len = head.chinY - head.crownY;
+    const float sEye = 0.46f;
+    const float yEye = head.crownY + 0.30f * len;
+
+    // Eyes, set high on the sides of the skull and turned well forward so
+    // both read from the front. A sad face half-lids them (in addEyeBead).
+    {
+        Mesh eyes;
+        eyes.doubleSided = true;
+        eyes.ambient = 0.30f;
+        eyes.spec = 0.42f;
+        eyes.shin = 30;
+        const float R = 0.15f * p.rxMax;
+        const Vec3f amber(40, 170, 236); // BGR
+        for (float side : {-1.f, 1.f})
+            addEyeAt(eyes, p, sEye, yEye, R, side, 2.00f, Vec3f(16, 18, 14),
+                     &amber);
+        eyes.computeNormals();
+        out.push_back(std::move(eyes));
+    }
+
+    // Brow horns: a short bony horn over each eye, leaning out. Raising the
+    // brows stands them up straight; a scowl splays them out and down over
+    // the eyes, as does a sad face. Swung across the screen rather than
+    // toward it -- head-on, a horn tipped forward does not visibly move.
+    {
+        const Section c = sectionAt(sEye, p);
+        const float splay = 0.55f - 0.45f * head.expr.browUp +
+                            0.95f * head.expr.browDown + 0.60f * head.expr.sad;
+        const float yH = yEye - 0.16f * len;
+        for (float side : {-1.f, 1.f}) {
+            const float dy = c.cy - yH;
+            const float n = clampf(dy / std::max(1e-3f, c.ryUp), -0.97f, 0.97f);
+            const float fx = std::sqrt(std::max(0.f, 1.f - n * n));
+            const Vec3f base(side * c.rx * fx * 0.92f, yH, c.z - 0.05f);
+            const Vec3f dir(side * splay, -1.f, -0.30f);
+            out.push_back(buildCone(base, dir, Vec3f(0.f, 0.f, 1.f),
+                                    0.20f * len, 0.085f * p.rxMax,
+                                    0.085f * p.rxMax, 0.35f,
+                                    Vec3f(70, 128, 120), Vec3f(176, 210, 222)));
+        }
+    }
+
+    // Spikes down the middle of the skull, biggest over the crown and
+    // shrinking toward the snout: from the front they stand up out of the
+    // top of the head as a crest, which is the silhouette that says dinosaur.
+    // Thin plates rather than pegs, leaned back.
+    {
+        const int nSpike = 6;
+        for (int i = 0; i < nSpike; ++i) {
+            const float sS = 0.04f + 0.50f * (float)i / (nSpike - 1);
+            const Section c = sectionAt(sS, p);
+            const float k = 1.f - 0.55f * (float)i / (nSpike - 1);
+            const Vec3f base(0.f, c.cy - c.ryUp, c.z);
+            out.push_back(buildCone(base, Vec3f(0.f, -1.f, 0.10f),
+                                    Vec3f(0.f, 0.f, 1.f), 0.24f * len * k,
+                                    0.075f * p.rxMax * k, 0.15f * p.rxMax * k,
+                                    0.45f, Vec3f(44, 112, 200),
+                                    Vec3f(70, 190, 250)));
+        }
+    }
+
+    // Nostrils: two dark pits on top of the front of the snout, facing up and
+    // forward.
+    {
+        // Just behind where the dome starts: any further forward and the
+        // shrinking cross-sections swallow them.
+        const Section c = sectionAt(0.80f, p);
+        for (float side : {-1.f, 1.f}) {
+            const Vec3f ctr(side * 0.36f * c.rx, c.cy - 0.86f * c.ryUp,
+                            c.z - 0.08f);
+            out.push_back(buildLobe(ctr, 0.17f * c.rx, 0.11f * c.rx,
+                                    0.05f * c.rx, Vec3f(22, 42, 28),
+                                    0.40f, 0.10f, 10));
+        }
+    }
+}
+
 std::vector<Mesh> buildMeshes(const Head& head, Species species) {
 
     std::vector<Mesh> meshes;
     if (species == Species::Shark || species == Species::Squirrel ||
-        species == Species::Elephant) {
+        species == Species::Elephant || species == Species::Dinosaur) {
         const bool shark = (species == Species::Shark);
+        const bool dino = (species == Species::Dinosaur);
         const HeadShape sp = shark      ? sharkShape(head)
+                             : dino     ? dinosaurShape(head)
                              : (species == Species::Squirrel)
                                  ? squirrelShape(head)
                                  : elephantShape(head);
@@ -1795,8 +2055,9 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         // How far the jaw drops. A shark's gape is enormous and the others
         // are not, but all three were opening far too little to read as an
         // open mouth at all.
-        const float ang = (shark ? 0.07f : 0.04f) +
-                          (shark ? 0.78f : 0.52f) *
+        // The dinosaur sits between: a big gape, but a heavier jaw.
+        const float ang = (shark ? 0.07f : dino ? 0.05f : 0.04f) +
+                          (shark ? 0.78f : dino ? 0.66f : 0.52f) *
                               clampf(head.expr.jawOpen, 0.f, 1.f);
         const Section hinge = sectionAt(sp.sHinge, sp);
         const Vec3f pivot(0.f, hinge.cy, hinge.z);
@@ -1806,27 +2067,50 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
 
         meshes.push_back(buildHeadHalf(sp, true));
         Mesh jaw = buildHeadHalf(sp, false);
-        Mesh tongue = buildMuzzleTongue(sp);
+        Mesh tongue = buildMuzzleTongue(sp, dino ? 0.92f : 10.f);
         // The jaw and everything in it are one group: they hinge together,
         // and slide together when the jaw is worked to one side.
         std::vector<Mesh*> group{&jaw, &tongue};
         Mesh upTeeth, lowTeeth;
+        const bool teeth = shark || dino;
         if (shark) {
             upTeeth = buildSharkTeeth(sp, true);
             lowTeeth = buildSharkTeeth(sp, false);
+        } else if (dino) {
+            const Vec3f enamel(214, 236, 242), root(150, 186, 200);
+            upTeeth = buildSharkTeeth(sp, true, 8, 1.35f, enamel, root);
+            lowTeeth = buildSharkTeeth(sp, false, 7, 1.15f, enamel, root);
+        }
+        if (teeth) {
             meshes.push_back(std::move(upTeeth));
             group.push_back(&lowTeeth);
         }
         const float slide = 0.22f * head.expr.jawSide * sp.rxMax;
+        // Behind the hinge the jaw is a whole cross-section of the head, not
+        // half of one (see buildHeadHalf), so swinging it rigidly lifts a
+        // skull-sized cap up over the top of the head. On the dinosaur, whose
+        // hinge is far back, that cap covered the eyes whenever the mouth
+        // opened. So there the swing fades in across the hinge instead: the
+        // back of the jaw stays put and only what is in front of it drops.
+        const float ramp = 0.30f;
         for (Mesh* j : group) {
             for (auto& q : j->pos) {
-                q = rotAbout(Rj, q, pivot);
-                q[0] += slide;
+                if (dino) {
+                    // The sideways slide fades in the same way, or the back
+                    // of the jaw slides out past the skull as a slab.
+                    float w = clampf((pivot[2] - q[2]) / ramp, 0.f, 1.f);
+                    w = w * w * (3.f - 2.f * w);
+                    q = rotAbout(rotAxis(Vec3f(1.f, 0.f, 0.f), ang * w), q, pivot);
+                    q[0] += slide * w;
+                } else {
+                    q = rotAbout(Rj, q, pivot);
+                    q[0] += slide;
+                }
             }
             j->computeNormals();
         }
         meshes.push_back(std::move(jaw));
-        if (shark) meshes.push_back(std::move(lowTeeth));
+        if (teeth) meshes.push_back(std::move(lowTeeth));
         meshes.push_back(std::move(tongue));
         if (shark) {
             // The same parameters the eyes had when they lived inside
@@ -1834,6 +2118,8 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
             meshes.push_back(buildEyeBeads(sp, 0.34f, 0.52f, 0.140f * sp.rxMax,
                                            Vec3f(16, 15, 18), 0.30f, 0.34f, 26));
             meshes.push_back(buildSharkTrim(sp));
+        } else if (dino) {
+            addDinosaurTrim(meshes, head, sp);
         } else if (species == Species::Squirrel) {
             addSquirrelTrim(meshes, head, sp);
         } else {

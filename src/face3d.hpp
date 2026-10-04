@@ -34,6 +34,9 @@ enum class Species {
     // nothing painted underneath, so the filter that draws it skips the mesh
     // paint entirely and calls render() on its own.
     Shark,
+    // A whole head as well, like the shark's: a T. rex, with a hinged jaw full
+    // of teeth, a crest of spikes and brow horns.
+    Dinosaur,
 };
 
 // The head's frame, measured from the face mesh, in image space.

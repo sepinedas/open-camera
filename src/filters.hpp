@@ -147,8 +147,8 @@ private:
     // from the face mesh in three dimensions.
     void drawAnimalParts(cv::Mat& frame, const Face& f, cv::Point2f off,
                          double phase, face3d::Species species) const;
-    // Replace the head outright with a 3D model -- the shark, or the
-    // squirrel. Unlike the painted animals this puts nothing on the mesh, but
+    // Replace the head outright with a 3D model -- the shark, the squirrel,
+    // the elephant or the dinosaur. Unlike the painted animals this puts nothing on the mesh, but
     // it is still driven by it: the same measured basis orients the model, the
     // head's own crown, chin and temples size it, and its expression works
     // the jaw, the eyelids, the tongue and the cheeks.

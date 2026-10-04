@@ -288,7 +288,7 @@ build/open-lego-camera [options]
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
 **Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** →
-**Grinch** → **Squirrel** → **Elephant** → **Shark** → off.
+**Grinch** → **Squirrel** → **Elephant** → **Dinosaur** → **Shark** → off.
 The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
@@ -330,13 +330,13 @@ you then capture.
   normal rather than pasted in front of it.
 
   (The character is Dr. Seuss's; the geometry and palette here are ours.)
-- **Squirrel**, **Elephant** and **Shark** are not paint at all: each
+- **Squirrel**, **Elephant**, **Dinosaur** and **Shark** are not paint at all: each
   replaces the whole head with a 3D model. Nothing is drawn on the mesh — the mesh *drives* the
   model instead. The same measured basis orients it, the head's own crown,
   chin and temples size it to the face it is worn by, and its expression works
   the jaw, the eyelids, the tongue and the cheeks.
 
-  All three are the same construction: a skull and a jaw that hinges against
+  All four are the same construction: a skull and a jaw that hinges against
   it,
   each swept along the head's own longitudinal axis as a single ring grid —
   an outer arc, then a return along the mouth line — so the inside of the
@@ -385,7 +385,30 @@ you then capture.
     head, so at the values that suit a dog they came out as two small flaps up
     by the crown.
 
-  Two things about both are deliberately not anatomical, because the camera
+  * The **dinosaur** is a cartoon T. rex: a deep skull, wide at the jaw
+    muscles, stepping in to a long boxy snout about half as wide that hangs
+    well below the chin. That step is what makes the snout read head-on as a
+    separate form under the cheeks rather than the whole head being one
+    green egg. It uses the squirrel's control-point outline, but with the
+    front of the snout capped by a dome (`domedSection`): closed only in
+    girth, the loft ends in a vertical blade, which on a snout this broad
+    showed as a crease down the middle of the face.
+
+    The jaw is hinged far back, so the gape runs most of the length of the
+    head and shows the shark's teeth, fewer and bigger. A hinge that far back
+    exposed something the others got away with: behind the hinge the jaw is a
+    whole cross-section of the head, so swinging it rigidly lifted a
+    skull-sized cap over the eyes. The dinosaur fades the swing (and the
+    sideways slide) in across the hinge instead, so only what is in front of
+    it moves.
+
+    Over it go amber eyes with a vertical slit pupil, a bony horn over each
+    eye that stands up on raised brows and splays out on a scowl or a sad
+    face, a crest of spikes down the middle of the skull — from the front,
+    the silhouette that says dinosaur — nostrils on top of the snout, and
+    dark bands across the back that fade out before the pale throat.
+
+  Two things about all of them are deliberately not anatomical, because the camera
   only ever sees them from the front:
 
   * **The muzzle points down as well as forward.** The projection is
@@ -438,14 +461,14 @@ rather than just sit on the face:
 
 | | driven by | what it does |
 |---|---|---|
-| jaw | `jawOpen` | the shark's jaw hinges; the warps stretch the mouth |
+| jaw | `jawOpen` | the shark's and dinosaur's jaws hinge; the warps stretch the mouth |
 | smile | `mouthSmile*` | lifts the corners of the gape and pulls them back, widening it; rounds the squirrel's cheeks; lifts the elephant's ears and curls its trunk |
 | sad | `mouthFrown*` **and** `browInnerUp` | drops the corners, lays the ears back, and half-lids the eyes |
 | blink | **eyelid landmarks**, not a blendshape | a lid slides down the eye of whichever model is worn |
-| brows | `browInnerUp`, `browOuterUp*`, `browDown*` | the animals prick their ears up, or lay them back |
+| brows | `browInnerUp`, `browOuterUp*`, `browDown*` | the animals prick their ears up, or lay them back; the dinosaur stands its brow horns up or splays them |
 | tongue | `tongueOut`, and the jaw | a tongue comes out — the shark's along the floor of its jaw, the animals' out of the muzzle |
 | trunk | `jawOpen` | raises and curls the elephant's trunk |
-| jaw sideways | `jawLeft` / `jawRight` | slides the shark's lower jaw, teeth and tongue as one group |
+| jaw sideways | `jawLeft` / `jawRight` | slides the shark's (or dinosaur's) lower jaw, teeth and tongue as one group |
 | cheeks | `cheekPuff` | fills out the squirrel's cheek pouches |
 | pucker | `mouthPucker` | curls the tip of the elephant's trunk |
 

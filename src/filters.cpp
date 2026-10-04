@@ -597,6 +597,7 @@ bool speciesFor(Filter f, face3d::Species& out) {
         case Filter::Grinch:  out = face3d::Species::Grinch; return true;
         case Filter::Squirrel: out = face3d::Species::Squirrel; return true;
         case Filter::Elephant: out = face3d::Species::Elephant; return true;
+        case Filter::Dinosaur: out = face3d::Species::Dinosaur; return true;
         case Filter::Shark:   out = face3d::Species::Shark; return true;
         default: return false;
     }
@@ -918,11 +919,13 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
             if (parts.area() > 0)
                 parts = grow(parts, 6, 6, 6); // slack for the idle ear wiggle
             // The painted animals colour the face mesh as well as hanging
-            // parts off it. The shark and the squirrel paint nothing at all,
-            // because they replace the head rather than decorate it.
+            // parts off it. The shark, the squirrel, the elephant and the
+            // dinosaur paint nothing at all, because they replace the head
+            // rather than decorate it.
             const bool wholeHead = (filter == Filter::Shark ||
                                     filter == Filter::Squirrel ||
-                                    filter == Filter::Elephant);
+                                    filter == Filter::Elephant ||
+                                    filter == Filter::Dinosaur);
             r = wholeHead ? parts
                           : (parts.area() == 0 ? grow(f, 4, 4, 4)
                                                : (grow(f, 4, 4, 4) | parts));
@@ -970,6 +973,8 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applyModelHead(roi, f, off, phase, face3d::Species::Squirrel);
         } else if (filter == Filter::Elephant) {
             applyModelHead(roi, f, off, phase, face3d::Species::Elephant);
+        } else if (filter == Filter::Dinosaur) {
+            applyModelHead(roi, f, off, phase, face3d::Species::Dinosaur);
         } else if (filter == Filter::Shark) {
             applyModelHead(roi, f, off, phase, face3d::Species::Shark);
         }
@@ -1323,7 +1328,8 @@ Filter nextFilter(Filter f) {
         case Filter::PigFace:  return Filter::Grinch;
         case Filter::Grinch:   return Filter::Squirrel;
         case Filter::Squirrel: return Filter::Elephant;
-        case Filter::Elephant: return Filter::Shark;
+        case Filter::Elephant: return Filter::Dinosaur;
+        case Filter::Dinosaur: return Filter::Shark;
         case Filter::Shark:    return Filter::None;
     }
     return Filter::None;
@@ -1340,6 +1346,7 @@ const char* filterName(Filter f) {
         case Filter::Grinch:   return "Grinch";
         case Filter::Squirrel: return "Squirrel";
         case Filter::Elephant: return "Elephant";
+        case Filter::Dinosaur: return "Dinosaur";
         case Filter::Shark:    return "Shark";
     }
     return "";

@@ -77,6 +77,7 @@ enum class Filter {
     Shark,    // the whole head replaced by a 3D shark, jaw and all
     Squirrel, // chestnut coat, round ears, buck teeth and full cheeks
     Elephant, // a whole grey head: ears, trunk and tusks
+    Dinosaur, // a whole T. rex head: toothy hinged jaw, spikes and brow horns
 };
 
 } // namespace olc
