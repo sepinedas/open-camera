@@ -58,6 +58,9 @@ static void printUsage(const char* prog) {
         "                               to match a rotated panel\n"
         "  --camera-rotate 0|90|180|270 rotate only the camera image (preview and\n"
         "                               captures), leaving the buttons in place\n"
+        "  --mirror none|picam|webcam|all  show these cameras mirrored, like a\n"
+        "                               selfie camera (preview and captures;\n"
+        "                               default: picam)\n"
         "  --touch-rotate 0|90|180|270  extra touch rotation if the touch panel\n"
         "                               is misaligned from the display\n"
         "                               (e.g. Pimoroni HyperPixel)\n"
@@ -156,6 +159,17 @@ bool parseArgs(int argc, char** argv, Config& out, int* exitCode) {
             if (out.cameraRotate != 0 && out.cameraRotate != 90 &&
                 out.cameraRotate != 180 && out.cameraRotate != 270) {
                 std::cerr << "bad --camera-rotate (0|90|180|270): " << v << "\n";
+                *exitCode = 2; return false;
+            }
+        } else if (a == "--mirror") {
+            const char* v = need(i); if (!v) return false;
+            const std::string m = v;
+            if (m == "none") out.mirror = Mirror::None;
+            else if (m == "picam") out.mirror = Mirror::PiCam;
+            else if (m == "webcam") out.mirror = Mirror::Webcam;
+            else if (m == "all") out.mirror = Mirror::All;
+            else {
+                std::cerr << "bad --mirror (none|picam|webcam|all): " << v << "\n";
                 *exitCode = 2; return false;
             }
         } else if (a == "--touch-rotate") {

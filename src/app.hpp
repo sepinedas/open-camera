@@ -42,8 +42,9 @@ private:
     // zoom is a GPU crop-and-scale; null shows the whole image. For NV12 the
     // GPU performs the YUV->RGB conversion. `rotate` (0/90/180/270 clockwise)
     // spins just the image on the GPU, independent of the whole-UI rotation.
+    // `mirror` flips the image left-right *on screen*, after the rotation.
     void blitCamera(const cv::Mat& frame, PixelFormat fmt, int imgW, int imgH,
-                    const SDL_Rect* src, int rotate = 0);
+                    const SDL_Rect* src, int rotate = 0, bool mirror = false);
     void beginFrame();                  // target the offscreen (logical) canvas
     void present();                     // blit the canvas to the panel, rotated
     void clear();
@@ -114,6 +115,8 @@ private:
     // Preview with a facial filter while keeping the frame in NV12: reshape only
     // the face region(s) on the CPU and let the GPU convert and zoom the rest.
     void renderFilteredNV12();
+    // Whether the live camera is one --mirror says to show mirrored.
+    bool mirrorLive() const;
     void renderGallery();
     void ensureGalleryImage();
     std::string timestampName(const char* prefix, const char* ext) const;

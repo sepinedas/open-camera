@@ -271,6 +271,8 @@ build/open-lego-camera [options]
   --size WxH                   requested preview size (default: 1280x720)
   --rotate 0|90|180|270        rotate the whole UI to match a rotated panel
   --camera-rotate 0|90|180|270 rotate only the camera image (preview + captures)
+  --mirror none|picam|webcam|all  mirror these cameras like a selfie camera
+                               (preview + captures; default: picam)
   --touch-rotate 0|90|180|270  extra touch rotation if touch is misaligned
   --touch-flip-x / --touch-flip-y   mirror touch on an axis
   --driver NAME                force SDL video driver (kmsdrm, fbcon, x11)
@@ -635,6 +637,20 @@ build/open-lego-camera --camera-rotate 90
 The image spins on the GPU for the preview (no extra CPU cost) and is baked into
 captures so a saved photo matches what you saw. It stacks with `--rotate`, which
 still turns the whole UI on top.
+
+The **Pi camera is mirrored by default**, like a phone's selfie camera: on this
+build it is the IMX500 AI camera, facing the person holding it, and an
+unmirrored preview moves the wrong way when you lean. `--mirror` picks which
+cameras are flipped left-right — `picam` (the default), `webcam`, `all` or
+`none` — and follows the camera switch button, so only the camera it names is
+shown mirrored. Like `--camera-rotate` it applies to captures too, so a photo
+is exactly the mirrored picture that was on screen. The flip is the last step,
+after any facial filter, so it costs nothing on the GPU preview path and the
+face tracking always sees the camera's own image.
+
+```sh
+build/open-lego-camera --mirror none   # show the Pi camera the way it sees
+```
 
 - Photos are saved as `IMG_YYYYMMDD_HHMMSS.jpg`. The gallery can still play
   back any existing `.mp4` videos in the output directory.

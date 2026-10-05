@@ -435,7 +435,7 @@ void App::renderMat(const cv::Mat& src, int rotate) {
 // the YUV->RGB conversion. `src`, when given, is the region to display -- the
 // GPU scales it to fill, which is how pinch-zoom stays free of a CPU resize.
 void App::blitCamera(const cv::Mat& frame, PixelFormat fmt, int imgW, int imgH,
-                     const SDL_Rect* src, int rotate) {
+                     const SDL_Rect* src, int rotate, bool mirror) {
     if (frame.empty() || imgW <= 0 || imgH <= 0) return;
 
     // Fall back to a CPU convert if the renderer can't sample NV12 textures.
@@ -483,12 +483,15 @@ void App::blitCamera(const cv::Mat& frame, PixelFormat fmt, int imgW, int imgH,
                     : std::max((double)viewW_ / imgW, (double)viewH_ / imgH);
     int dw = (int)(imgW * s), dh = (int)(imgH * s);
     SDL_Rect dst{(viewW_ - dw) / 2, (viewH_ - dh) / 2, dw, dh};
-    if (rot == 0) {
+    // SDL flips the texture *before* rotating it, so for a quarter turn the
+    // texture's vertical axis is the one that ends up across the screen.
+    const SDL_RendererFlip flip =
+        !mirror ? SDL_FLIP_NONE : (swap ? SDL_FLIP_VERTICAL : SDL_FLIP_HORIZONTAL);
+    if (rot == 0 && flip == SDL_FLIP_NONE) {
         SDL_RenderCopy(ren_, tex_, src, &dst);
     } else {
         SDL_Point center{dw / 2, dh / 2};
-        SDL_RenderCopyEx(ren_, tex_, src, &dst, (double)rot, &center,
-                         SDL_FLIP_NONE);
+        SDL_RenderCopyEx(ren_, tex_, src, &dst, (double)rot, &center, flip);
     }
 }
 
@@ -801,6 +804,9 @@ void App::capturePhoto() {
                                                 // face; matches the preview
     faceFilter_.apply(shot, filter_, filterPhase_);
     cam_->cropZoom(shot);
+    // Mirrored last, as the preview is (see renderCamera), so the photo is
+    // exactly what was on screen -- filter lighting and all.
+    if (mirrorLive()) cv::flip(shot, shot, 1);
     std::string path = timestampName("IMG", ".jpg");
     bool ok = false;
     try {
@@ -1059,6 +1065,11 @@ void App::renderCamera() {
                                 !nv12Unsupported_ && !lastNative_.empty() &&
                                 cfg_.cameraRotate == 0;
 
+    // Mirroring is always the last step, after the filter has drawn: the
+    // face tracking then sees the camera's own image whichever way it is
+    // shown, and the NV12 paths can leave the flip to the GPU.
+    const bool mirror = mirrorLive();
+
     beginFrame();
     if (filtering && !nv12FilterPath) {
         // Full-resolution BGR: convert, rotate to display orientation, reshape
@@ -1070,6 +1081,7 @@ void App::renderCamera() {
         bgr = rotatedBGR(bgr, cfg_.cameraRotate);
         faceFilter_.apply(bgr, filter_, filterPhase_);
         cam_->cropZoom(bgr);
+        if (mirror) cv::flip(bgr, bgr, 1);
         renderMat(bgr, 0); // already in display orientation
     } else if (nv12FilterPath) {
         renderFilteredNV12();
@@ -1079,7 +1091,7 @@ void App::renderCamera() {
         cv::Rect zr = cam_->zoomSrcRect(cam_->width(), cam_->height());
         SDL_Rect z{zr.x, zr.y, zr.width, zr.height};
         blitCamera(lastNative_, cam_->format(), cam_->width(), cam_->height(),
-                   cam_->zoomed() ? &z : nullptr, cfg_.cameraRotate);
+                   cam_->zoomed() ? &z : nullptr, cfg_.cameraRotate, mirror);
     } else {
         clear();
     }
@@ -1150,7 +1162,8 @@ void App::renderFilteredNV12() {
 
     if (region.area() == 0) {
         // No face in view: nothing to reshape, so stay on the pure fast path.
-        blitCamera(lastNative_, PixelFormat::NV12, W, H, zp, cfg_.cameraRotate);
+        blitCamera(lastNative_, PixelFormat::NV12, W, H, zp, cfg_.cameraRotate,
+                   mirrorLive());
         return;
     }
 
@@ -1160,7 +1173,19 @@ void App::renderFilteredNV12() {
     cv::Mat roi = Camera::nv12CropToBGR(filteredNative_, region);
     faceFilter_.applyRegion(roi, region.tl(), filter_, filterPhase_);
     Camera::bgrIntoNV12(roi, filteredNative_, region.tl());
-    blitCamera(filteredNative_, PixelFormat::NV12, W, H, zp, cfg_.cameraRotate);
+    blitCamera(filteredNative_, PixelFormat::NV12, W, H, zp, cfg_.cameraRotate,
+               mirrorLive());
+}
+
+bool App::mirrorLive() const {
+    if (!cam_) return false;
+    switch (cfg_.mirror) {
+        case Mirror::None:   return false;
+        case Mirror::All:    return true;
+        case Mirror::PiCam:  return cam_->source().kind == CameraKind::PiCam;
+        case Mirror::Webcam: return cam_->source().kind == CameraKind::Webcam;
+    }
+    return false;
 }
 
 void App::ensureGalleryImage() {
