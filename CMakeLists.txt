@@ -100,11 +100,25 @@ else()
     "mediapipe::formats::MatView.")
 endif()
 
+# libdrm (optional): lets sleep switch the display pipeline off (DPMS) through
+# the DRM device SDL's kmsdrm driver already holds, which stops scanout, lets a
+# DSI/DPI panel power down and puts an HDMI monitor into standby. Without it,
+# sleep still switches the backlight off. Usually already installed alongside
+# SDL2; otherwise `sudo apt install libdrm-dev`.
+pkg_check_modules(LIBDRM QUIET libdrm)
+if(LIBDRM_FOUND)
+  message(STATUS "libdrm found: sleep will power the display pipeline down")
+else()
+  message(STATUS "libdrm not found: sleep will switch the backlight off only "
+                 "(install libdrm-dev to power the display pipeline down too)")
+endif()
+
 add_executable(open-lego-camera
   src/main.cpp
   src/config.cpp
   src/camera.cpp
   src/battery.cpp
+  src/display_power.cpp
   src/gallery.cpp
   src/icons.cpp
   src/ui.cpp
@@ -131,6 +145,12 @@ target_link_libraries(open-lego-camera PRIVATE
 # MediaPipe here is built CPU-only; the GPU code paths in headers such as
 # image.h are compiled out by the same define the library was built with.
 target_compile_definitions(open-lego-camera PRIVATE MEDIAPIPE_DISABLE_GPU=1)
+
+if(LIBDRM_FOUND)
+  target_include_directories(open-lego-camera PRIVATE ${LIBDRM_INCLUDE_DIRS})
+  target_link_libraries(open-lego-camera PRIVATE ${LIBDRM_LIBRARIES})
+  target_compile_definitions(open-lego-camera PRIVATE OLC_HAVE_LIBDRM=1)
+endif()
 
 if(MEDIAPIPE_RPATH)
   set_target_properties(open-lego-camera PROPERTIES

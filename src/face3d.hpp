@@ -39,6 +39,10 @@ enum class Species {
     // A whole head as well, like the shark's: a T. rex, with a hinged jaw full
     // of teeth, a crest of spikes and brow horns.
     Dinosaur,
+    // A whole head too: a dragon, horned and frilled, that breathes fire
+    // when the mouth opens. The fire is drawn by render() over the model and
+    // counted in bounds(), so nothing else has to know about it.
+    Dragon,
 };
 
 // The head's frame, measured from the face mesh, in image space.

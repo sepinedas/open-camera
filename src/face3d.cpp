@@ -200,6 +200,34 @@ Style styleFor(Species sp) {
         s.noseCol = Vec3f(30, 30, 42);
         s.nostrilCol = Vec3f(12, 12, 18);
         s.tongueCol = Vec3f(124, 110, 202);
+    } else if (sp == Species::Dragon) {
+        // Not ears but frills: long pointed fins swept out and up from the
+        // sides of the skull, a crimson rim round a gold membrane. Pointed
+        // right to the tip -- on a dragon a horn-like silhouette is the point.
+        s.earAttachX = 0.90f; s.earAttachY = 0.16f;
+        s.earTipX = 1.95f;    s.earTipY = -0.62f;
+        // A low earRound tapers the whole way to a point; a high one holds
+        // the width to the end and then cuts it off, which reads as a rod.
+        s.earHalfW = 0.27f;   s.earRound = 1.15f;
+        s.earBaseW = 0.55f;
+        s.earBowl = 0.12f;    s.earRim = 0.050f;
+        s.earShell = 0.040f;  s.earYaw = 0.30f;
+        s.earCurl = 0.10f;    s.earInnerAmt = 0.85f;
+        s.earMottle = 0.06f;
+        // Wide gold or orange inside reads as a mouse's ear whatever the
+        // outline; a darker red membrane inside a crimson rim reads as a fin.
+        s.earCol = Vec3f(36, 34, 160);
+        s.earInnerCol = Vec3f(30, 70, 190);
+        s.snout = false;
+        s.noseR = 0.12f;
+        s.noseWide = 1.f; s.noseTall = 1.f; s.noseYOff = 0.f;
+        s.noseAmbient = 0.40f; s.noseSpec = 0.20f; s.noseShin = 16;
+        s.nostrilX = 0.42f; s.nostrilY = 0.f;
+        s.nostrilRx = 0.28f; s.nostrilRy = 0.34f;
+        s.nostrilDepth = 0.24f;
+        s.noseCol = Vec3f(40, 38, 170);
+        s.nostrilCol = Vec3f(20, 20, 60);
+        s.tongueCol = Vec3f(110, 90, 210);
     } else { // Pig
         // Ears stand up off the crown and lean outward: the tip's y is
         // negative, i.e. *above* the crown, which is what keeps them clear of
@@ -1392,6 +1420,61 @@ HeadShape dinosaurShape(const Head& h) {
     return p;
 }
 
+HeadShape dragonShape(const Head& h) {
+    HeadShape p{};
+    p.crown = h.crownY;
+    p.chin = h.chinY;
+    const float len = h.chinY - h.crownY;
+    const float smile = mapped(h) ? 0.f : h.expr.smile;
+    const float sad = mapped(h) ? 0.f : h.expr.sad;
+    // The dinosaur's build -- a deep skull over a snout that hangs below the
+    // chin, so it is seen head-on -- but leaner: the snout slopes away from
+    // the brow and narrows to a muzzle, where a T. rex's stays a blunt box.
+    // The front is rounded off by domedSection, as the dinosaur's is.
+    static const float kTop[kProfN]   = {-0.14f, -0.25f, -0.27f, -0.20f,
+                                         -0.04f,  0.16f,  0.34f,  0.50f, 0.60f};
+    static const float kMouth[kProfN] = { 0.70f,  0.72f,  0.76f,  0.83f,
+                                          0.92f,  1.01f,  1.09f,  1.15f, 1.16f};
+    static const float kBot[kProfN]   = { 0.92f,  0.98f,  1.02f,  1.07f,
+                                          1.13f,  1.19f,  1.24f,  1.27f, 1.27f};
+    static const float kGirth[kProfN] = { 0.86f,  1.00f,  0.98f,  0.80f,
+                                          0.60f,  0.50f,  0.45f,  0.42f, 0.38f};
+    for (int i = 0; i < kProfN; ++i) {
+        p.top[i] = kTop[i];
+        p.mouth[i] = kMouth[i];
+        p.bot[i] = kBot[i];
+        p.girth[i] = kGirth[i];
+    }
+    p.sectionFn = domedSection;
+    p.e = h.expr;
+    const float lift = (-0.16f * smile + 0.11f * sad) * len;
+    for (int i = 0; i < kProfN; ++i) {
+        const float t = (float)i / (kProfN - 1);
+        p.mouth[i] += lift * std::pow(1.f - t, 0.55f);
+    }
+    float hi = p.top[0];
+    for (int i = 1; i < kProfN; ++i) hi = std::min(hi, p.top[i]);
+    p.topBack = h.crownY + hi * len;
+    p.cyBack = h.crownY + p.mouth[0] * len;
+    p.cyTip = h.crownY + p.mouth[kProfN - 1] * len;
+    p.botBack = h.crownY + p.bot[0] * len;
+    p.rxMax = h.headHalfW * 1.36f;
+    // A long gape, so the fire has a wide mouth to come out of.
+    p.sHinge = 0.28f - 0.06f * smile;
+    p.zBack = 1.25f;
+    p.zTip = h.noseZ - 1.25f;
+    p.back = Vec3f(34, 28, 140);     // BGR: deep crimson scales
+    p.flank = Vec3f(46, 52, 196);
+    p.belly = Vec3f(96, 196, 236);   // gold throat and jaw
+    p.waterA = 0.40f; p.waterB = 0.64f;
+    p.gullet = Vec3f(60, 90, 200);
+    p.fur = 0.04f;
+    p.gills = false;
+    // Banded, like the dinosaur's hide, but finer: scales rather than stripes.
+    p.stripes = 0.22f;
+    return p;
+}
+
 // One half of the head: the skull if `upper`, the lower jaw otherwise.
 //
 // Each cross-section is a closed outline -- the outer arc, then a return along
@@ -2265,6 +2348,237 @@ void deform(Mesh& m, const MotionMap& mm) {
     if (moved) m.computeNormals();
 }
 
+// --- Fire -----------------------------------------------------------------------
+// The dragon's breath: a jet of flame from between its jaws, drawn over the
+// model as particles rather than as geometry. Fire has no surface to shade.
+// Each particle deposits *heat*, and the summed heat is coloured through a
+// fire palette: too little is nothing at all, then deep red, orange, yellow
+// and a white core where the most flames crowd together. Colouring the
+// particles themselves and adding them up was tried first; it averages into
+// a soft ball with a pink haze round it, because there is no threshold to give
+// the flames edges and faint red screened over a pale background is pink.
+struct Fire {
+    float amount = 0.f; // 0 none .. 1 full blast
+    Vec3f origin;       // model space: between the jaws
+    Vec3f dir;          // unit: the way the jet goes
+    float length = 0.f; // how far it reaches, in eye separations
+};
+
+constexpr int kFlames = 170;
+// Frames from a flame leaving the mouth to burning out: about two thirds of a
+// second at the preview's rate. Every flame is somewhere in that cycle, so
+// the jet is always full and always moving.
+constexpr float kFlameLife = 20.f;
+
+struct Flame {
+    Vec3f p;    // model space
+    float r;    // radius, eye separations
+    float t;    // age, 0 at the mouth .. 1 burnt out
+    float heat; // brightness, 0..1
+};
+
+float hash01(int i, int k) { return 0.5f * (mottle(i, k * 131 + 17) + 1.f); }
+
+// Every flame of `f` at this frame. One generator for drawing and for bounds,
+// so the region the preview prepares is exactly the one the flames land in.
+template <class Fn> void forEachFlame(const Head& h, const Fire& f, Fn fn) {
+    if (f.amount <= 0.f || f.length <= 0.f) return;
+    // Across the jet. The jet always lies in the head's y-z plane, so +x is
+    // square to it.
+    const Vec3f u(1.f, 0.f, 0.f);
+    const Vec3f v = norm(f.dir.cross(u));
+    const float L = f.length;
+    for (int i = 0; i < kFlames; ++i) {
+        const float a = (float)h.phase / kFlameLife + hash01(i, 1);
+        const float t = a - std::floor(a);
+        // Leaves the mouth fast and slows as it spreads, the way a jet does.
+        const float along = L * std::pow(t, 0.8f);
+        // A cone that widens with age, each flame at its own place in it and
+        // swirling as it goes so the jet churns instead of streaming.
+        const float R = L * (0.06f + 0.55f * t);
+        const float th = 2.f * kPi * hash01(i, 2) + 2.4f * t;
+        const float rho = std::sqrt(hash01(i, 3));
+        Vec3f q = f.origin + f.dir * along +
+                  u * (std::cos(th) * rho * R) + v * (std::sin(th) * rho * R);
+        // Hot gas rises: the end of the jet lifts.
+        q[1] -= 0.20f * L * t * t;
+        const float r = L * (0.045f + 0.17f * t) * (0.7f + 0.6f * hash01(i, 4));
+        // Fades in over the first few frames so flames do not pop into being
+        // at the lip, and cools as it burns, flickering on the way. Young
+        // flames crowd the mouth and old ones spread, so the heat is highest
+        // at the lip and falls away down the jet -- which is what puts the
+        // white core at the mouth and the red at the edges.
+        const float flicker = 0.65f + 0.35f * std::sin((float)h.phase * 0.9f + 7.f * i);
+        const float heat = 0.45f * f.amount * flicker *
+                           std::min(1.f, t * 12.f) * std::pow(1.f - t, 1.1f);
+        fn(Flame{q, r, t, heat});
+    }
+}
+
+// The fire palette: summed heat to colour (BGR), deep red through orange and
+// yellow to white.
+Vec3f firePalette(float H) {
+    static const float stop[5] = {0.10f, 0.35f, 0.75f, 1.30f, 2.40f};
+    static const Vec3f col[5] = {Vec3f(20, 25, 160), Vec3f(15, 90, 240),
+                                 Vec3f(20, 160, 255), Vec3f(60, 225, 255),
+                                 Vec3f(210, 250, 255)};
+    if (H <= stop[0]) return col[0];
+    for (int k = 0; k < 4; ++k)
+        if (H <= stop[k + 1]) {
+            const float w = (H - stop[k]) / (stop[k + 1] - stop[k]);
+            return col[k] * (1.f - w) + col[k + 1] * w;
+        }
+    return col[4];
+}
+
+// How much further a flame reaches above its centre than below it, on
+// screen. A flame is a teardrop that licks upward; round splats sum to a
+// cauliflower, and the same splats drawn tall at the top sum to tongues.
+constexpr float kFlameTall = 1.8f;
+
+// Where a flame lands on screen, and how far its glow reaches there.
+void flameOnScreen(const Head& h, const Flame& fl, float& sx, float& sy,
+                   float& sr) {
+    const Vec3f w = h.R * (fl.p * h.unit);
+    sx = h.anchor.x + w[0];
+    sy = h.anchor.y + w[1];
+    sr = fl.r * h.unit;
+}
+
+cv::Rect fireBounds(const Head& h, const Fire& f) {
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    forEachFlame(h, f, [&](const Flame& fl) {
+        if (fl.heat <= 0.f) return;
+        float sx, sy, sr;
+        flameOnScreen(h, fl, sx, sy, sr);
+        x0 = std::min(x0, sx - sr); x1 = std::max(x1, sx + sr);
+        y0 = std::min(y0, sy - kFlameTall * sr); y1 = std::max(y1, sy + sr);
+    });
+    if (x1 <= x0 || y1 <= y0) return cv::Rect();
+    return cv::Rect((int)std::floor(x0) - 2, (int)std::floor(y0) - 2,
+                    (int)std::ceil(x1 - x0) + 4, (int)std::ceil(y1 - y0) + 4);
+}
+
+// Downsampling for the heat field. Flames are soft, so a quarter of the
+// resolution loses nothing visible, and it is sixteen times less work: at
+// full size the splats alone cost more than the whole dragon's raster.
+constexpr int kFireDown = 4;
+
+void drawFire(cv::Mat& frame, const Head& h, const Fire& f) {
+    const cv::Rect box = fireBounds(h, f) & cv::Rect(0, 0, frame.cols, frame.rows);
+    if (box.width < 2 || box.height < 2) return;
+    const int LW = box.width / kFireDown + 2, LH = box.height / kFireDown + 2;
+    std::vector<float> heat((size_t)LW * LH, 0.f);
+    std::vector<float> smoke((size_t)LW * LH, 0.f);
+
+    forEachFlame(h, f, [&](const Flame& fl) {
+        if (fl.heat <= 0.f) return;
+        float sx, sy, sr;
+        flameOnScreen(h, fl, sx, sy, sr);
+        const float cx = (sx - box.x) / kFireDown, cy = (sy - box.y) / kFireDown;
+        const float R = std::max(1.f, sr / kFireDown);
+        // Old flames leave a little smoke behind them.
+        const float sm = 0.06f * f.amount * clampf((fl.t - 0.65f) * 3.f, 0.f, 1.f);
+        const int ya = std::max(0, (int)std::floor(cy - kFlameTall * R));
+        const int yb = std::min(LH - 1, (int)std::ceil(cy + R));
+        const int xa = std::max(0, (int)std::floor(cx - R));
+        const int xb = std::min(LW - 1, (int)std::ceil(cx + R));
+        const float inv = 1.f / (R * R);
+        for (int y = ya; y <= yb; ++y)
+            for (int x = xa; x <= xb; ++x) {
+                const float dx = x - cx;
+                // Above the centre the flame is drawn out into a tongue,
+                // narrowing as it rises.
+                const float dy = (y < cy) ? (y - cy) / kFlameTall : (y - cy);
+                const float d2 = (dx * dx * (y < cy ? 1.f + 0.6f * -dy / R : 1.f) +
+                                  dy * dy) * inv;
+                if (d2 >= 1.f) continue;
+                // A soft round falloff without an exp per pixel.
+                const float k = (1.f - d2) * (1.f - d2);
+                const size_t n = (size_t)y * LW + x;
+                heat[n] += fl.heat * k;
+                smoke[n] += sm * k;
+            }
+    });
+
+    // Onto the frame. Smoke darkens what is behind it; then the flames go
+    // over it in their palette colour, opaque where the heat is enough to burn
+    // and fading out just below that, which is what gives them edges; and a
+    // faint orange glow is screened round them, so they light the air instead
+    // of being cut out of paper.
+    //
+    // All three steps are, per channel, linear in what is underneath --
+    // screening by c is v (1 - c/255) + c -- so together they are one
+    // multiply-add, `v m + b`, and m and b depend only on the heat and the
+    // smoke. They are worked out once per node of the coarse grid and only
+    // interpolated per pixel: the palette and its threshold per pixel, at full
+    // resolution over a fireball, cost more than the splatting did.
+    const Vec3f smokeCol(40, 40, 46);
+    const Vec3f haloCol(10, 70, 210);
+    // Per node: the three multipliers, then the three offsets.
+    std::vector<float> ma((size_t)LW * LH * 6, 0.f);
+    std::vector<uchar> lit((size_t)LW * LH, 0);
+    for (size_t n = 0; n < heat.size(); ++n) {
+        float* q = &ma[n * 6];
+        q[0] = q[1] = q[2] = 1.f;
+        const float H = heat[n];
+        const float sm = std::min(0.55f, smoke[n]);
+        if (H < 0.01f && sm < 0.004f) continue;
+        const float alpha = smooth01(0.10f, 0.32f, H);
+        const Vec3f pal = firePalette(H);
+        const float halo = 0.45f * std::min(1.f, H * 2.5f) * (1.f - alpha);
+        for (int k = 0; k < 3; ++k) {
+            const float c = haloCol[k] * halo;
+            const float keep = 1.f - c * (1.f / 255.f);
+            q[k] = (1.f - sm) * (1.f - alpha) * keep;
+            q[3 + k] = (smokeCol[k] * sm * (1.f - alpha) + pal[k] * alpha) * keep + c;
+        }
+        lit[n] = 1;
+    }
+    // Each column's place in the coarse grid, once rather than per row.
+    std::vector<int> colI(box.width);
+    std::vector<float> colA(box.width);
+    for (int x = 0; x < box.width; ++x) {
+        const float fx = std::min((float)(LW - 1), (float)x / kFireDown);
+        colI[x] = std::min(LW - 2, (int)fx);
+        colA[x] = fx - colI[x];
+    }
+    // Interpolated down the column once per output row, so each pixel only
+    // blends two nodes across -- at full resolution over a fireball, the
+    // per-pixel work is the whole cost of the fire.
+    std::vector<float> row((size_t)LW * 6);
+    std::vector<uchar> rowLit(LW);
+    for (int y = 0; y < box.height; ++y) {
+        const float fy = std::min((float)(LH - 1), (float)y / kFireDown);
+        const int j = std::min(LH - 2, (int)fy);
+        const float b = fy - j;
+        const float* r0 = &ma[(size_t)j * LW * 6];
+        const float* r1 = r0 + (size_t)LW * 6;
+        bool any = false;
+        for (int i = 0; i < LW; ++i) {
+            rowLit[i] = lit[(size_t)j * LW + i] | lit[(size_t)(j + 1) * LW + i];
+            any |= rowLit[i] != 0;
+            for (int k = 0; k < 6; ++k)
+                row[i * 6 + k] = r0[i * 6 + k] + (r1[i * 6 + k] - r0[i * 6 + k]) * b;
+        }
+        if (!any) continue;
+        uchar* d = frame.ptr<uchar>(box.y + y) + 3 * box.x;
+        for (int x = 0; x < box.width; ++x, d += 3) {
+            const int i = colI[x];
+            if (!(rowLit[i] | rowLit[i + 1])) continue;
+            const float a = colA[x];
+            const float* p0 = &row[i * 6];
+            const float* p1 = p0 + 6;
+            for (int k = 0; k < 3; ++k) {
+                const float m = p0[k] + (p1[k] - p0[k]) * a;
+                const float o = p0[3 + k] + (p1[3 + k] - p0[3 + k]) * a;
+                const float v = d[k] * m + o;
+                d[k] = (uchar)(v <= 0.f ? 0 : (v >= 255.f ? 255 : (int)(v + 0.5f)));
+            }
+        }
+    }
+}
+
 // --- Projection + rasteriser -----------------------------------------------
 
 // Orthographic: the basis already carries the head's real 3D orientation, so
@@ -2617,14 +2931,116 @@ void addDinosaurTrim(std::vector<Mesh>& out, const Head& head,
     }
 }
 
-std::vector<Mesh> buildMeshes(const Head& head, Species species) {
+// Everything a dragon has that the loft does not: gold slit-pupilled eyes,
+// horns sweeping up and back off the skull, finned frills at the sides, a
+// crest of spikes, spikes at the corners of the jaw and nostrils on the snout.
+void addDragonTrim(std::vector<Mesh>& out, const Head& head,
+                   const HeadShape& p) {
+    const float len = head.chinY - head.crownY;
+    const float sEye = 0.44f;
+    const float yEye = head.crownY + 0.30f * len;
+
+    {
+        Mesh eyes;
+        eyes.doubleSided = true;
+        eyes.ambient = 0.34f;
+        eyes.spec = 0.48f;
+        eyes.shin = 32;
+        const float R = 0.15f * p.rxMax;
+        const Vec3f gold(20, 205, 255); // BGR
+        for (float side : {-1.f, 1.f})
+            addEyeAt(eyes, p, sEye, yEye, R, side, 2.00f, Vec3f(10, 12, 16),
+                     &gold);
+        eyes.computeNormals();
+        out.push_back(std::move(eyes));
+    }
+
+    // Horns: from the top of the skull behind the eyes, rising and curling
+    // back. Curled only part of the way: head-on, a horn swept straight back
+    // is end-on and disappears behind the head that grows it.
+    {
+        const Section c = sectionAt(0.20f, p);
+        for (float side : {-1.f, 1.f}) {
+            const Vec3f base(side * 0.52f * c.rx, c.cy - 0.82f * c.ryUp, c.z);
+            out.push_back(buildTaperTube(base, 0.88f * kPi, 1.30f * kPi,
+                                         side * 0.78f, 0.82f * len,
+                                         0.12f * p.rxMax, 0.08f,
+                                         Vec3f(130, 176, 204), 0.05f,
+                                         0.50f, 0.30f, 22));
+        }
+    }
+
+    // Frills, on the sides of the model's skull, raised and laid back by the
+    // brows like the animals' ears.
+    {
+        const Style st = styleFor(Species::Dragon);
+        Head eh = head;
+        eh.crownY = p.topBack + 0.36f * len;
+        eh.headHalfW = p.rxMax * 0.92f;
+        const float wig = 0.05f * std::sin((float)head.phase * 0.11f) +
+                          0.30f * head.expr.browUp - 0.26f * head.expr.browDown -
+                          0.20f * head.expr.sad;
+        out.push_back(buildEar(-1.f, wig, eh, st));
+        out.push_back(buildEar(+1.f, wig, eh, st));
+    }
+
+    // A crest down the middle of the skull, tallest over the crown.
+    {
+        const int nSpike = 7;
+        for (int i = 0; i < nSpike; ++i) {
+            const float sS = 0.03f + 0.58f * (float)i / (nSpike - 1);
+            const Section c = sectionAt(sS, p);
+            const float k = 1.f - 0.60f * (float)i / (nSpike - 1);
+            const Vec3f base(0.f, c.cy - c.ryUp, c.z);
+            out.push_back(buildCone(base, Vec3f(0.f, -1.f, 0.12f),
+                                    Vec3f(0.f, 0.f, 1.f), 0.20f * len * k,
+                                    0.06f * p.rxMax * k, 0.14f * p.rxMax * k,
+                                    0.50f, Vec3f(40, 60, 170),
+                                    Vec3f(60, 170, 245)));
+        }
+    }
+
+    // Spikes at the corners of the jaw, pointing out and back: they put the
+    // dragon's jawline on the silhouette.
+    {
+        const Section c = sectionAt(p.sHinge, p);
+        for (float side : {-1.f, 1.f}) {
+            const Vec3f base(side * 0.96f * c.rx, c.cy + 0.25f * c.ryLo, c.z);
+            out.push_back(buildCone(base, Vec3f(side * 1.f, 0.25f, 0.35f),
+                                    Vec3f(0.f, 0.f, 1.f), 0.20f * len,
+                                    0.06f * p.rxMax, 0.06f * p.rxMax, 0.30f,
+                                    Vec3f(40, 60, 170), Vec3f(150, 192, 214)));
+        }
+    }
+
+    // Nostrils, on top of the end of the snout.
+    {
+        const Section c = sectionAt(0.82f, p);
+        for (float side : {-1.f, 1.f}) {
+            const Vec3f ctr(side * 0.34f * c.rx, c.cy - 0.86f * c.ryUp,
+                            c.z - 0.08f);
+            out.push_back(buildLobe(ctr, 0.15f * c.rx, 0.10f * c.rx,
+                                    0.05f * c.rx, Vec3f(16, 16, 50),
+                                    0.40f, 0.10f, 10));
+        }
+    }
+}
+
+std::vector<Mesh> buildMeshes(const Head& head, Species species,
+                              Fire* fire = nullptr) {
 
     std::vector<Mesh> meshes;
+    if (fire) *fire = Fire{};
     if (species == Species::Shark || species == Species::Squirrel ||
-        species == Species::Elephant || species == Species::Dinosaur) {
+        species == Species::Elephant || species == Species::Dinosaur ||
+        species == Species::Dragon) {
         const bool shark = (species == Species::Shark);
-        const bool dino = (species == Species::Dinosaur);
+        const bool dragon = (species == Species::Dragon);
+        // The dragon is built on the dinosaur: the same loft, toothed jaw and
+        // hinge, with its own outline and trim.
+        const bool dino = (species == Species::Dinosaur) || dragon;
         const HeadShape sp = shark      ? sharkShape(head)
+                             : dragon   ? dragonShape(head)
                              : dino     ? dinosaurShape(head)
                              : (species == Species::Squirrel)
                                  ? squirrelShape(head)
@@ -2644,6 +3060,11 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         if (shark) {
             upTeeth = buildSharkTeeth(sp, true);
             lowTeeth = buildSharkTeeth(sp, false);
+        } else if (dragon) {
+            // Fewer and longer: fangs.
+            const Vec3f enamel(220, 238, 244), root(150, 180, 196);
+            upTeeth = buildSharkTeeth(sp, true, 7, 1.50f, enamel, root);
+            lowTeeth = buildSharkTeeth(sp, false, 6, 1.30f, enamel, root);
         } else if (dino) {
             const Vec3f enamel(214, 236, 242), root(150, 186, 200);
             upTeeth = buildSharkTeeth(sp, true, 8, 1.35f, enamel, root);
@@ -2667,6 +3088,9 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
             const Section ce = sectionAt(0.34f, sp);
             eye = Vec3f(ce.rx * std::cos(0.52f) * 0.99f,
                         ce.cy - ce.ryUp * std::sin(0.52f) * 0.99f, ce.z);
+        } else if (dragon) {
+            addDragonTrim(meshes, head, sp);
+            eye = eyeCentreAt(sp, 0.44f, head.crownY + 0.30f * len, 1.f);
         } else if (dino) {
             addDinosaurTrim(meshes, head, sp);
             eye = eyeCentreAt(sp, 0.46f, head.crownY + 0.30f * len, 1.f);
@@ -2748,6 +3172,30 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         meshes.push_back(std::move(jaw));
         if (teeth) meshes.push_back(std::move(lowTeeth));
         meshes.push_back(std::move(tongue));
+
+        // Fire, once the mouth is open far enough to breathe it -- not at the
+        // first parting of the lips, which happens talking.
+        if (dragon && fire) {
+            const float amt = smooth01(0.30f, 0.70f, head.expr.jawOpen);
+            if (amt > 0.f) {
+                // Between the jaws near the front: the upper mouth line, and
+                // the same point on the lower jaw swung open with it.
+                const Section c = sectionAt(0.90f, sp);
+                const Vec3f up(0.f, c.cy, c.z);
+                const Vec3f lo = rotAbout(rotAxis(Vec3f(1.f, 0.f, 0.f), ang),
+                                          up, pivot);
+                fire->amount = amt;
+                fire->origin = (up + lo) * 0.5f;
+                // Along the middle of the gape, tipped a little further down
+                // so it visibly pours out of the mouth. Mostly at the camera,
+                // though: head-on that is a fireball swelling out of the jaws
+                // toward you, which is the picture; aimed down it mostly
+                // leaves the bottom of the frame.
+                const float a = 0.5f * ang + 0.15f;
+                fire->dir = Vec3f(0.f, std::sin(a), -std::cos(a));
+                fire->length = (0.55f + 0.45f * amt) * 1.45f * len;
+            }
+        }
     } else {
         const Style st = styleFor(species);
         // Ears answer the brows. Raising them pricks the ears up and out,
@@ -2821,7 +3269,8 @@ cv::Rect meshBounds(const std::vector<Mesh>& meshes, const Head& head,
 // also lets the two calls differ by the region origin the way they do.
 // render() is called from the one preview path, as the scratch buffers
 // below already assume, so a single entry is enough.
-const std::vector<Mesh>& modelFor(const Head& head, Species species) {
+const std::vector<Mesh>& modelFor(const Head& head, Species species,
+                                  Fire* fire = nullptr) {
     struct Entry {
         bool valid = false;
         Species species = Species::Dog;
@@ -2830,6 +3279,7 @@ const std::vector<Mesh>& modelFor(const Head& head, Species species) {
         double phase = 0.0;
         std::vector<Vec3f> live, rest;
         std::vector<Mesh> meshes;
+        Fire fire;
     };
     static Entry cache;
     const float shape[5] = {head.headHalfW, head.crownY, head.noseY,
@@ -2853,7 +3303,7 @@ const std::vector<Mesh>& modelFor(const Head& head, Species species) {
         e.tongue == c.tongue && e.jawSide == c.jawSide &&
         sameVec(head.live, cache.live) && sameVec(head.rest, cache.rest);
     if (!hit) {
-        cache.meshes = buildMeshes(head, species);
+        cache.meshes = buildMeshes(head, species, &cache.fire);
         cache.valid = true;
         cache.species = species;
         std::copy(shape, shape + 5, cache.shape);
@@ -2862,6 +3312,7 @@ const std::vector<Mesh>& modelFor(const Head& head, Species species) {
         cache.live = head.live;
         cache.rest = head.rest;
     }
+    if (fire) *fire = cache.fire;
     return cache.meshes;
 }
 
@@ -2869,14 +3320,19 @@ cv::Rect bounds(const Head& head, Species species) {
     if (head.unit < 12.f) return cv::Rect();
     // A frame-sized clip, because the caller intersects with the frame itself.
     const int big = 1 << 20;
-    return meshBounds(modelFor(head, species), head, big, big);
+    Fire fire;
+    const cv::Rect model = meshBounds(modelFor(head, species, &fire), head, big, big);
+    const cv::Rect flames = fireBounds(head, fire);
+    if (flames.area() == 0) return model;
+    return model.area() == 0 ? flames : (model | flames);
 }
 
 void render(cv::Mat& frame, const Head& head, Species species) {
     if (frame.empty() || frame.type() != CV_8UC3) return;
     if (head.unit < 12.f) return; // too small to render cleanly
 
-    const std::vector<Mesh>& meshes = modelFor(head, species);
+    Fire fire;
+    const std::vector<Mesh>& meshes = modelFor(head, species, &fire);
     const cv::Rect roi = meshBounds(meshes, head, frame.cols, frame.rows);
     if (roi.width < 2 || roi.height < 2) return;
 
@@ -2926,6 +3382,9 @@ void render(cv::Mat& frame, const Head& head, Species species) {
             }
         }
     }
+    // Over everything: the jet comes out toward the camera, so nothing of the
+    // model is in front of it.
+    drawFire(frame, head, fire);
 }
 
 } // namespace olc::face3d

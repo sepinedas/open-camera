@@ -607,6 +607,7 @@ bool speciesFor(Filter f, face3d::Species& out) {
         case Filter::Squirrel: out = face3d::Species::Squirrel; return true;
         case Filter::Elephant: out = face3d::Species::Elephant; return true;
         case Filter::Dinosaur: out = face3d::Species::Dinosaur; return true;
+        case Filter::Dragon:  out = face3d::Species::Dragon; return true;
         case Filter::Shark:   out = face3d::Species::Shark; return true;
         default: return false;
     }
@@ -992,7 +993,8 @@ void FaceFilter::updateDetection(const cv::Mat& src, cv::Size frameSize) {
     detect(src, frameSize.area() > 0 ? frameSize : src.size());
 }
 
-cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
+cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h,
+                                 double phase) const {
     if (filter == Filter::None || w <= 0 || h <= 0) return cv::Rect();
 
     // Union of what each face's filter will actually touch. One face -> a
@@ -1024,7 +1026,7 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
             // renderer already knows the exact projected extent, so use it.
             face3d::Head h;
             cv::Rect parts;
-            if (headFromFace(face, cv::Point2f(0.f, 0.f), 0.0, h))
+            if (headFromFace(face, cv::Point2f(0.f, 0.f), phase, h))
                 parts = face3d::bounds(h, sp);
             if (parts.area() > 0)
                 parts = grow(parts, 6, 6, 6); // slack for the idle ear wiggle
@@ -1035,7 +1037,8 @@ cv::Rect FaceFilter::dirtyRegion(Filter filter, int w, int h) const {
             const bool wholeHead = (filter == Filter::Shark ||
                                     filter == Filter::Squirrel ||
                                     filter == Filter::Elephant ||
-                                    filter == Filter::Dinosaur);
+                                    filter == Filter::Dinosaur ||
+                                    filter == Filter::Dragon);
             r = wholeHead ? parts
                           : (parts.area() == 0 ? grow(f, 4, 4, 4)
                                                : (grow(f, 4, 4, 4) | parts));
@@ -1085,6 +1088,8 @@ void FaceFilter::applyRegion(cv::Mat& roi, cv::Point origin, Filter filter,
             applyModelHead(roi, f, off, phase, face3d::Species::Elephant);
         } else if (filter == Filter::Dinosaur) {
             applyModelHead(roi, f, off, phase, face3d::Species::Dinosaur);
+        } else if (filter == Filter::Dragon) {
+            applyModelHead(roi, f, off, phase, face3d::Species::Dragon);
         } else if (filter == Filter::Shark) {
             applyModelHead(roi, f, off, phase, face3d::Species::Shark);
         }
@@ -1408,7 +1413,8 @@ Filter nextFilter(Filter f) {
         case Filter::Grinch:   return Filter::Squirrel;
         case Filter::Squirrel: return Filter::Elephant;
         case Filter::Elephant: return Filter::Dinosaur;
-        case Filter::Dinosaur: return Filter::Shark;
+        case Filter::Dinosaur: return Filter::Dragon;
+        case Filter::Dragon:   return Filter::Shark;
         case Filter::Shark:    return Filter::None;
     }
     return Filter::None;
@@ -1426,6 +1432,7 @@ const char* filterName(Filter f) {
         case Filter::Squirrel: return "Squirrel";
         case Filter::Elephant: return "Elephant";
         case Filter::Dinosaur: return "Dinosaur";
+        case Filter::Dragon:   return "Dragon";
         case Filter::Shark:    return "Shark";
     }
     return "";

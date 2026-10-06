@@ -11,6 +11,7 @@
 #include "battery.hpp"
 #include "camera.hpp"
 #include "config.hpp"
+#include "display_power.hpp"
 #include "filters.hpp"
 #include "gallery.hpp"
 #include "types.hpp"
@@ -103,12 +104,14 @@ private:
     void refreshSources();
     void playCurrentVideo();
     void goHome();          // leave the camera for the welcome screen
-    void enterSleep();      // blank the screen (and power the panel off on a Pi)
+    // Sleep: the backlight and the display pipeline off (see DisplayPower),
+    // and the camera closed, so a sleeping camera draws as little as the Pi
+    // can manage while still listening for the wake double-tap.
+    void enterSleep();
     void wakeFromSleep();   // restore the display and return to the welcome screen
-    // Toggle the Pi display output (vcgencmd display_power). Best-effort: returns
-    // false where the command is unavailable (e.g. a desktop), so callers know
-    // whether the panel was actually powered down.
-    bool setDisplayPower(bool on);
+    // Open a camera again after sleep closed it: the one that was live, else
+    // any other. False when none will start.
+    bool reopenCamera();
 
     // --- per-mode rendering ---
     void renderWelcome();   // Lego-brick camera + Start / Sleep controls
@@ -150,10 +153,14 @@ private:
     Mode mode_ = Mode::Welcome;
     bool running_ = true;
 
-    // Display-sleep state (Welcome -> Sleep). displayOff_ tracks whether the
-    // panel was actually powered down; lastSleepTapMs_ times the wake double-tap.
-    bool displayOff_ = false;
+    // Display-sleep state (Welcome -> Sleep). displayPower_ remembers what
+    // was switched off so it can be switched back on; lastSleepTapMs_ times the
+    // wake double-tap. The camera that was live, and its zoom, are kept so
+    // waking brings the same one back.
+    DisplayPower displayPower_;
     Uint32 lastSleepTapMs_ = 0;
+    CameraSource sleptCamera_;
+    double sleptZoom_ = 1.0;
 
     // Live facial-expression filter (cycled by the smiley button).
     Filter filter_ = Filter::None;

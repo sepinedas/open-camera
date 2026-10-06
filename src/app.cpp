@@ -676,7 +676,7 @@ void App::handleFingerDown(const SDL_TouchFingerEvent& f) {
             double mx, my;
             if (fingerMidView(mx, my))
                 galleryViewToImage(mx, my, pinchAnchorX_, pinchAnchorY_);
-        } else {
+        } else if (cam_) {
             pinchStartZoom_ = cam_->zoom();
         }
     }
@@ -706,7 +706,7 @@ void App::handleFingerMotion(const SDL_TouchFingerEvent& f) {
                 galleryPanY_ = pinchAnchorY_ - (my - viewH_ * 0.5) / (s * galleryMat_.rows);
             }
             galleryCrop(); // clamp the pan
-        } else if (mode_ != Mode::Gallery) {
+        } else if (mode_ != Mode::Gallery && cam_) {
             cam_->setZoom(z);
         }
         zoomLabelUntil_ = SDL_GetTicks() + 1200;
@@ -892,6 +892,9 @@ void App::dispatch(Action a) {
             break;
         case Action::StartCamera:
             refreshSources(); // a webcam plugged in since startup gets the button
+            // Normally already open again since the wake; this is the retry
+            // for a camera that would not start then.
+            if (!reopenCamera()) break;
             mode_ = Mode::Camera;
             menu_.wake();
             break;
@@ -1068,38 +1071,72 @@ void App::goHome() {
     menu_.wake();
 }
 
-// Toggle the display output on a Raspberry Pi. Best-effort: silently no-ops
-// (returning false) wherever vcgencmd isn't present, e.g. a desktop session.
-bool App::setDisplayPower(bool on) {
-    std::string cmd = std::string("vcgencmd display_power ") + (on ? "1" : "0") +
-                      " >/dev/null 2>&1";
-    int rc = std::system(cmd.c_str());
-    return rc == 0;
-}
-
-// Blank the screen and, on a Pi, power the panel down to save energy (a Pi 5
-// idles at several watts, so the panel is worth switching off). Wakes on a
-// double-tap (see onTap) or any key.
+// Sleep. A black screen alone saves next to nothing: the backlight is most of
+// an LCD's draw and stays lit behind black pixels, and the camera keeps
+// streaming -- sensor, ISP and the capture pipeline all running -- for a
+// preview nobody is looking at. So the camera is closed, the backlight and the
+// display pipeline are switched off (DisplayPower), and the main loop blocks
+// waiting for a touch instead of spinning (renderSleep). The touch controller
+// is a separate I2C device and stays awake, so the wake double-tap (see onTap)
+// still works, as does any key.
 void App::enterSleep() {
     mode_ = Mode::Sleep;
     lastSleepTapMs_ = 0;
-    // Flush a black frame first so nothing lingers if the panel stays powered.
+    // Flush a black frame first, so nothing lingers on a panel that cannot be
+    // switched off and nothing flashes up on one that comes back.
     beginFrame();
     clear();
     present();
-    displayOff_ = setDisplayPower(false);
-    std::cout << (displayOff_ ? "display: panel powered off (sleep)\n"
-                              : "display: screen blanked (sleep)\n");
+
+    if (cam_) {
+        sleptCamera_ = cam_->source();
+        sleptZoom_ = cam_->zoom();
+        // Frames may point into the capture pipeline's buffers; let go of
+        // them before the pipeline goes.
+        lastNative_.release();
+        filteredNative_.release();
+        cam_.reset();
+        std::cout << "camera: closed for sleep\n";
+    }
+
+    // Not in a desktop session: there the "display" is a window, and the
+    // backlight is the laptop's.
+    const bool desktop = cfg_.windowed || std::getenv("DISPLAY") ||
+                         std::getenv("WAYLAND_DISPLAY");
+    const std::string off = desktop ? std::string() : displayPower_.sleep(win_);
+    std::cout << (off.empty() ? std::string("display: screen blanked (sleep); "
+                                            "nothing could be switched off\n")
+                              : "display: switched off " + off + " (sleep)\n");
 }
 
-// Restore the display and go back to the welcome screen.
-void App::wakeFromSleep() {
-    if (displayOff_) {
-        setDisplayPower(true);
-        displayOff_ = false;
+bool App::reopenCamera() {
+    if (cam_) return true;
+    std::vector<CameraSource> order{sleptCamera_};
+    for (const CameraSource& s : sources_)
+        if (!(s == sleptCamera_)) order.push_back(s);
+    for (const CameraSource& s : order) {
+        if (s.index < 0 && s.kind == CameraKind::Webcam) continue; // never set
+        cam_ = openWithRetry(s);
+        if (cam_) break;
     }
+    if (!cam_) {
+        std::cerr << "camera: none would start after sleep\n";
+        return false;
+    }
+    if (cam_->source() == sleptCamera_) cam_->setZoom(sleptZoom_);
+    std::cout << "camera: " << cam_->description() << " reopened\n";
+    return true;
+}
+
+// Restore the display, bring the camera back and go to the welcome screen.
+// The camera is reopened now rather than on Start, so Start is instant; the
+// second or so it takes passes while the welcome screen is coming up.
+void App::wakeFromSleep() {
+    displayPower_.wake(win_);
     mode_ = Mode::Welcome;
     menu_.wake();
+    renderWelcome(); // a picture up before the camera's start-up pause
+    reopenCamera();
     std::cout << "display: woke from sleep\n";
 }
 
@@ -1154,15 +1191,19 @@ void App::renderWelcome() {
     present();
 }
 
-// Asleep: keep the screen black. When the panel is genuinely powered off we
-// avoid re-presenting; otherwise we hold a black frame. Idle to spare the CPU.
+// Asleep: nothing to draw, so block until there is input rather than polling
+// for it. The timeout only bounds how long the main loop goes without seeing
+// the battery -- it still has to shut the Pi down cleanly if the cell runs
+// flat overnight -- and once a second is plenty for that. Where nothing could
+// be switched off, the black frame is re-presented at the same rate in case
+// anything else draws over it.
 void App::renderSleep() {
-    if (!displayOff_) {
+    if (!displayPower_.dark()) {
         beginFrame();
         clear();
         present();
     }
-    SDL_Delay(80);
+    SDL_WaitEventTimeout(nullptr, 1000);
 }
 
 void App::renderCamera() {
@@ -1277,7 +1318,7 @@ void App::renderFilteredNV12() {
     faceFilter_.updateDetection(
         Camera::nv12ToBGRScaled(lastNative_, FaceFilter::detectionWidth()),
         cv::Size(W, H));
-    cv::Rect region = faceFilter_.dirtyRegion(filter_, W, H);
+    cv::Rect region = faceFilter_.dirtyRegion(filter_, W, H, filterPhase_);
 
     clear();
     cv::Rect zr = cam_->zoomSrcRect(W, H);

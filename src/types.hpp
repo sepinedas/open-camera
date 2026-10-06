@@ -78,6 +78,7 @@ enum class Filter {
     Squirrel, // chestnut coat, round ears, buck teeth and full cheeks
     Elephant, // a whole grey head: ears, trunk and tusks
     Dinosaur, // a whole T. rex head: toothy hinged jaw, spikes and brow horns
+    Dragon,   // a whole dragon head that breathes fire when the mouth opens
 };
 
 } // namespace olc

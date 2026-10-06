@@ -83,7 +83,11 @@ public:
     // for the currently-detected faces (face boxes + margin for the warp and
     // tears, clamped to WxH and made even for chroma-subsampled buffers). An
     // empty rect means there is nothing to reshape this frame.
-    cv::Rect dirtyRegion(Filter filter, int w, int h) const;
+    //
+    // `phase` must be the one applyRegion() will be given this frame: the
+    // animated parts (the dragon's fire) are measured where they will be,
+    // and the 3D model built here is reused by the draw only if it matches.
+    cv::Rect dirtyRegion(Filter filter, int w, int h, double phase) const;
 
     // Apply `filter` to `roi`, a BGR sub-image whose top-left sits at `origin`
     // in frame space. Only the parts of each face falling inside `roi` are

@@ -14,9 +14,10 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
   draws straight to the **HDMI** output through DRM/KMS (SDL2's `kmsdrm`
   driver, selected automatically).
 - Opens on a **welcome screen** with a **camera built from Lego bricks** and two
-  big controls: **Start Camera** and **Sleep**. Sleep blanks the screen (and, on
-  a Raspberry Pi, powers the panel off via `vcgencmd display_power` to save
-  energy); a **double-tap** on the screen wakes it. In the camera view a
+  big controls: **Start Camera** and **Sleep**. Sleep switches the LCD's
+  **backlight** and the **display pipeline** off and **closes the camera**, so
+  the Pi idles while it waits (see [Sleep and power](#sleep-and-power)); a
+  **double-tap** on the screen wakes it. In the camera view a
   **home** button returns to the welcome screen.
 - Fullscreen live preview with a **translucent, auto-hiding menu**: a few
   seconds after your last tap the menu fades away; tap anywhere to bring it
@@ -59,7 +60,7 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
 
 | Requirement | How |
 | --- | --- |
-| Welcome screen with a Lego-brick camera; Start / Sleep options | `Mode::Welcome` draws `drawLegoCamera` (bricks + lens in `icons.cpp`); Sleep blanks the panel via `vcgencmd display_power` and wakes on a double-tap |
+| Welcome screen with a Lego-brick camera; Start / Sleep options | `Mode::Welcome` draws `drawLegoCamera` (bricks + lens in `icons.cpp`); Sleep turns the backlight and display pipeline off and closes the camera (`DisplayPower`, `App::enterSleep`); wakes on a double-tap |
 | Runs with a webcam **or** Pi camera | `Camera` auto-detects: libcamera (GStreamer) first, then V4L2 webcam; force one with `--camera picam` / `--camera webcam` |
 | Switch between two cameras while running | `Camera::sources()` enumerates the V4L2 nodes up front; the switch button reopens the preview on the next one (`App::switchCamera`) |
 | Written in C++ | C++20, CMake build |
@@ -293,7 +294,8 @@ build/open-lego-camera [options]
 
 Tap the **smiley** button in the camera menu to cycle the live facial filter:
 **Big Smile** → **Crying** → **Face Mesh** → **Dog Face** → **Pig Face** →
-**Grinch** → **Squirrel** → **Elephant** → **Dinosaur** → **Shark** → off.
+**Grinch** → **Squirrel** → **Elephant** → **Dinosaur** → **Dragon** →
+**Shark** → off.
 The active
 filter's name appears briefly on screen, and the effect is baked into any photo
 you then capture.
@@ -335,13 +337,13 @@ you then capture.
   normal rather than pasted in front of it.
 
   (The character is Dr. Seuss's; the geometry and palette here are ours.)
-- **Squirrel**, **Elephant**, **Dinosaur** and **Shark** are not paint at all: each
+- **Squirrel**, **Elephant**, **Dinosaur**, **Dragon** and **Shark** are not paint at all: each
   replaces the whole head with a 3D model. Nothing is drawn on the mesh — the mesh *drives* the
   model instead. The same measured basis orients it, the head's own crown,
   chin and temples size it to the face it is worn by, and its expression works
   the jaw, the eyelids, the tongue and the cheeks.
 
-  All four are the same construction: a skull and a jaw that hinges against
+  All five are the same construction: a skull and a jaw that hinges against
   it,
   each swept along the head's own longitudinal axis as a single ring grid —
   an outer arc, then a return along the mouth line — so the inside of the
@@ -415,6 +417,34 @@ you then capture.
     face, a crest of spikes down the middle of the skull — from the front,
     the silhouette that says dinosaur — nostrils on top of the snout, and
     dark bands across the back that fade out before the pale throat.
+
+  * The **dragon** is built on the dinosaur — the same loft, toothed jaw and
+    hinge — with a leaner outline: crimson scales over a gold throat, a snout
+    that slopes away from the brow and narrows to a muzzle, and fangs rather
+    than rows of teeth. Over it go gold slit-pupilled eyes, horns rising off
+    the skull and curling back, pointed fins swept out from the sides (raised
+    and laid back by the brows, like the animals' ears), a crest of spikes,
+    spikes at the corners of the jaw, and nostrils on the snout.
+
+    **Open your mouth and it breathes fire.** The fire fades in as the mouth
+    opens past about a third (talking does not set it off) and is at full
+    blast near fully open. It is particles, not geometry: ~170 flames stream
+    from between the jaws, widening, swirling and rising as they cool. Each
+    one deposits *heat*, and the summed heat is coloured through a fire
+    palette — nothing below a threshold, then deep red, orange, yellow, and
+    white only at the hottest spots. That threshold is what gives the flames
+    edges; colouring each flame and adding them up was tried first and gave a
+    soft ball in a pink haze. Each flame is drawn as a teardrop that licks
+    upward, so the edges come out as tongues rather than a cauliflower.
+    The jet points mostly *at* the camera: head-on that reads as a fireball
+    swelling out of the jaws toward you, where a jet aimed downward just
+    leaves the bottom of the frame.
+
+    The heat is splatted at a quarter of the resolution, and the composite
+    (smoke, then flame, then a screened glow, which together are one
+    multiply-add per channel) is worked out per coarse node and only
+    interpolated per pixel. Counted in `bounds()`, so the preview's dirty
+    region always covers the flames.
 
   Two things about all of them are deliberately not anatomical, because the camera
   only ever sees them from the front:
@@ -702,7 +732,7 @@ build/open-lego-camera --mirror none   # show the Pi camera the way it sees
 - Photos are saved as `IMG_YYYYMMDD_HHMMSS.jpg`. The gallery can still play
   back any existing `.mp4` videos in the output directory.
 - The app opens on the **welcome screen**; tap **Start Camera** to begin or
-  **Sleep** to blank the screen (**double-tap** to wake). The **home** icon in
+  **Sleep** to switch the screen off (**double-tap** to wake). The **home** icon in
   the camera menu returns here.
 - **Tap the screen** to wake the menu after it has faded.
 - **Esc** or **Q** steps back one screen: camera → welcome, gallery → camera,
@@ -710,6 +740,53 @@ build/open-lego-camera --mirror none   # show the Pi camera the way it sees
   In the gallery, **←** / **→** step to older / newer items.
 - `--windowed` is handy when developing on a desktop (the app then uses the
   desktop's SDL driver automatically).
+
+## Sleep and power
+
+**Sleep** on the welcome screen does more than draw black. A black frame alone
+saves almost nothing: an LCD's backlight is most of its power draw and stays
+lit behind black pixels, the display keeps scanning the frame out sixty times a
+second, and the camera keeps streaming for a preview nobody is watching. So
+sleep:
+
+- **switches the backlight off** through the kernel's backlight class
+  (`/sys/class/backlight/*`: `bl_power` to powered-down, brightness to 0),
+  remembering the brightness to put back. That covers the HyperPixel's GPIO
+  backlight and DSI panels such as the official 7″ and the Waveshare 5″;
+- **switches the display pipeline off** (DPMS) through the DRM device SDL's
+  `kmsdrm` driver already holds: scanout stops, a DSI/DPI panel's driver
+  powers the panel down, and an HDMI monitor drops into standby. Needs libdrm
+  at build time (`sudo apt install libdrm-dev`; CMake reports whether it
+  found it) and no special permissions, since the app is already the
+  display's owner;
+- falls back to `vcgencmd display_power` only where neither of those exists
+  (the legacy firmware display stack, where they don't apply);
+- **closes the camera**, stopping the sensor, the ISP and the capture
+  pipeline, and reopens the same camera at the same zoom on waking;
+- **stops spinning**: the main loop blocks waiting for a touch instead of
+  polling, waking once a second only to keep an eye on the battery (a
+  low-battery shutdown still happens while asleep).
+
+The touch controller is a separate device and stays on, so the
+**double-tap** still wakes it. The app logs what it managed to switch off,
+e.g. `display: switched off backlight 10-0045, display pipeline (DPMS)
+(sleep)`.
+
+**Backlight permissions.** The backlight files are root-only by default. The
+app writes them directly if it can, and otherwise retries through `sudo -n`,
+which on a stock Raspberry Pi OS (passwordless sudo for the default user)
+just works. Without passwordless sudo, let the `video` group write them with
+a udev rule, and make sure your user is in `video`:
+
+```sh
+sudo tee /etc/udev/rules.d/99-backlight.rules >/dev/null <<'RULE'
+SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"
+RULE
+sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=backlight
+```
+
+In a desktop session (or `--windowed`) sleep only blanks the window: there the
+display isn't the app's, and the backlight is the laptop's.
 
 ## Battery monitor (Waveshare UPS HAT)
 
