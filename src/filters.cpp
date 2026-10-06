@@ -260,6 +260,15 @@ constexpr int kBrowInnerR = 107, kBrowInnerL = 336;
 constexpr int kIrisR = 468, kIrisL = 473;
 constexpr int kNoseTip = 1;                   // where the 3D nose sits
 constexpr int kChin = 152, kForehead = 10;    // the head's vertical axis
+// Below the nose, where the columella meets the lip: with the forehead, a
+// vertical axis that is all skull. The chin is not -- it drops when the mouth
+// opens, and an axis through it pitches the whole head frame back with it.
+constexpr int kSubnasale = 2;
+// How far forehead->subnasale leans toward the camera from forehead->chin,
+// measured on MediaPipe's canonical face. Turned back by this much, the skull
+// axis gives the same frame the chin did at rest, so every model tuned against
+// that frame still sits where it did.
+constexpr float kSkullAxisTilt = 9.37f * 3.14159265f / 180.f;
 constexpr int kTempleR = 127, kTempleL = 356; // head width -> ear attachment
 constexpr int kEyeROuter = 33, kEyeRInner = 133, kEyeRUp = 159, kEyeRLow = 145;
 constexpr int kEyeLOuter = 263, kEyeLInner = 362, kEyeLUp = 386, kEyeLLow = 374;
@@ -843,8 +852,109 @@ void FaceFilter::detect(const cv::Mat& src, cv::Size frameSize) {
             e.jawSide = mirrored ? subj : -subj;
         }
 
+        trackRest(f);
         faces_.push_back(std::move(f));
     }
+    // Forget faces that have left. Not at once: a face lost for a few frames
+    // -- a hand across it, a turn too far -- comes back as the same face.
+    for (auto& r : rests_) ++r.missed;
+    rests_.erase(std::remove_if(rests_.begin(), rests_.end(),
+                                [](const RestTrack& r) { return r.missed > 60; }),
+                 rests_.end());
+}
+
+void FaceFilter::trackRest(Face& f) {
+    f.unit = 0.f;
+    if ((int)f.mesh3.size() < kMeshMin) return;
+    auto V = [&](int i) {
+        return cv::Vec3f(f.mesh3[i].x, f.mesh3[i].y, f.mesh3[i].z);
+    };
+    auto unit3 = [](cv::Vec3f v) {
+        const float n = std::sqrt(v.dot(v));
+        return n > 1e-6f ? v * (1.f / n) : v;
+    };
+
+    // The head's frame. Three landmarks give the axes: the eye centres span
+    // its width, the forehead-to-nose line its height, and their cross
+    // product the direction it faces. Because MediaPipe supplies a depth per
+    // landmark, this is a genuine 3D frame -- no guessing yaw from how the
+    // nose divides the face.
+    //
+    // The unit is the distance between the eye *centres*, not the outer
+    // corners: every proportion and every constant in face3d is expressed in
+    // eye separations, and the outer corners are about 1.45x that.
+    auto eyeCentre = [&](int a, int b, int c, int d) {
+        return (V(a) + V(b) + V(c) + V(d)) * 0.25f;
+    };
+    const cv::Vec3f cR = eyeCentre(kEyeROuter, kEyeRInner, kEyeRUp, kEyeRLow);
+    const cv::Vec3f cL = eyeCentre(kEyeLOuter, kEyeLInner, kEyeLUp, kEyeLLow);
+    const cv::Vec3f span = cL - cR;
+    const float unit = std::sqrt(span.dot(span));
+    if (unit < 12.f) return;
+
+    cv::Vec3f ex = unit3(span);
+    // MediaPipe labels by the subject's anatomy, so on a mirrored preview the
+    // "left" eye is on the image right; flip so +x is image-right.
+    if (ex[0] < 0.f) ex = -ex;
+    // Down the skull, square to the eye line, then turned back to where the
+    // chin axis is at rest (kSkullAxisTilt). ex x u is the direction that
+    // turns +y toward +z, away from the camera.
+    const cv::Vec3f s0 = V(kSubnasale) - V(kForehead);
+    const cv::Vec3f u = unit3(s0 - ex * s0.dot(ex));
+    const cv::Vec3f ey = unit3(u * std::cos(kSkullAxisTilt) +
+                               ex.cross(u) * std::sin(kSkullAxisTilt));
+    // ez completes a right-handed frame; with image y pointing down, that
+    // points *away* from the camera, which is the depth direction wanted.
+    const cv::Vec3f ez = unit3(ex.cross(ey));
+    f.ex = ex;
+    f.ey = ey;
+    f.ez = ez;
+    f.origin = (cR + cL) * 0.5f;
+    f.unit = unit;
+
+    f.local.resize(kMeshMin);
+    for (int i = 0; i < kMeshMin; ++i) {
+        const cv::Vec3f d = V(i) - f.origin;
+        f.local[i] = cv::Vec3f(d.dot(ex), d.dot(ey), d.dot(ez)) * (1.f / unit);
+    }
+
+    // Which rest this face is: the nearest track, if it is near enough to be
+    // the same head moved a little since the last frame.
+    const cv::Point2f centre((float)f.box.x + 0.5f * f.box.width,
+                             (float)f.box.y + 0.5f * f.box.height);
+    RestTrack* best = nullptr;
+    float bestD = 0.5f * (float)f.box.width;
+    for (RestTrack& r : rests_) {
+        if (r.missed < 0) continue; // already claimed by a face this frame
+        const float d = len(r.centre - centre);
+        if (d < bestD) { bestD = d; best = &r; }
+    }
+    if (!best) {
+        // A face not seen before. Its first frame is the best guess at rest
+        // there is -- most people are not mid-grimace the moment they come
+        // into view -- and anything else it was doing is learnt away below.
+        rests_.push_back(RestTrack{centre, f.local, -1});
+        best = &rests_.back();
+    } else {
+        // Learn the rest only while the face is at rest, by its scores, and
+        // slowly: a quarter-second of relaxed face moves it most of the way,
+        // a held smile not at all. Without the blendshape head the scores
+        // other than the jaw and the lids read zero, so a smile held long
+        // enough is learnt as this face's rest -- the models then stop
+        // smiling with it, which is the honest failure.
+        const Expression& e = f.expr;
+        const float busy = std::max({e.jawOpen, e.smile, e.frown, e.browUp,
+                                     e.browDown, e.pucker, e.cheekPuff,
+                                     e.blinkL, e.blinkR, std::fabs(e.jawSide)});
+        const float calm = clamp01(1.f - busy / 0.25f);
+        const float rate = 0.10f * calm * calm;
+        if (rate > 0.f)
+            for (int i = 0; i < kMeshMin; ++i)
+                best->mesh[i] += (f.local[i] - best->mesh[i]) * rate;
+        best->centre = centre;
+    }
+    best->missed = -1; // counted back up to 0 at the end of detect()
+    f.rest = best->mesh;
 }
 
 void FaceFilter::apply(cv::Mat& frame, Filter filter, double phase) {
@@ -1163,62 +1273,28 @@ void FaceFilter::applyFaceMesh(cv::Mat& frame, const Face& f,
     }
 }
 
-// Read the head's orientation straight off the mesh. Three landmarks give the
-// axes: the outer eye corners span the head's width, the forehead-to-chin line
-// its height, and their cross product the direction it faces. Because
-// MediaPipe supplies a depth per landmark, this is a genuine 3D frame -- no
-// guessing yaw from how the nose divides the face, and no foreshortening
-// correction, which is what the old rig needed and never got quite right.
+// The Head the 3D models are built against: the frame trackRest() measured,
+// the face's proportions, and the whole mesh now and at rest.
 bool FaceFilter::headFromFace(const Face& f, cv::Point2f off, double phase,
                               face3d::Head& out) const {
-    if ((int)f.mesh3.size() < 468) return false;
-    auto V = [&](int i) {
-        return cv::Vec3f(f.mesh3[i].x, f.mesh3[i].y, f.mesh3[i].z);
-    };
-    auto unit3 = [](cv::Vec3f v) {
-        const float n = std::sqrt(v.dot(v));
-        return n > 1e-6f ? v * (1.f / n) : v;
-    };
-
-    // The unit is the distance between the eye *centres*, not the outer
-    // corners: every proportion below and every constant in face3d is expressed
-    // in eye separations, and the outer corners are about 1.45x that, which
-    // would scale the whole rig up by the same factor.
-    auto eyeCentre = [&](int a, int b, int c, int d) {
-        return (V(a) + V(b) + V(c) + V(d)) * 0.25f;
-    };
-    const cv::Vec3f cR = eyeCentre(kEyeROuter, kEyeRInner, kEyeRUp, kEyeRLow);
-    const cv::Vec3f cL = eyeCentre(kEyeLOuter, kEyeLInner, kEyeLUp, kEyeLLow);
-    const cv::Vec3f span = cL - cR;
-    const float unit = std::sqrt(span.dot(span));
-    if (unit < 12.f) return false;
-
-    cv::Vec3f ex = unit3(span);
-    const cv::Vec3f ey0 = unit3(V(kChin) - V(kForehead));
-    // ez completes a right-handed frame; with image y pointing down, that
-    // points *away* from the camera, which is the depth direction wanted.
-    cv::Vec3f ez = unit3(ex.cross(ey0));
-    const cv::Vec3f ey = unit3(ez.cross(ex)); // re-orthogonalise
-    // MediaPipe labels by the subject's anatomy, so on a mirrored preview the
-    // "left" outer eye corner is on the image right; flip so +x is image-right.
-    if (ex[0] < 0.f) { ex = -ex; ez = -ez; }
+    if (f.unit < 12.f || (int)f.rest.size() < kMeshMin) return false;
+    const cv::Vec3f &ex = f.ex, &ey = f.ey, &ez = f.ez;
 
     face3d::Head& h = out;
     h.R = cv::Matx33f(ex[0], ey[0], ez[0],
                       ex[1], ey[1], ez[1],
                       ex[2], ey[2], ez[2]); // columns: right, down, back
-    h.unit = unit;
+    h.unit = f.unit;
     const cv::Point2f eyeMid = (f.eyeL + f.eyeR) * 0.5f - off;
     h.anchor = eyeMid;
     h.phase = phase;
 
     // Proportions, read in the head's own frame -- exact here, because the
-    // frame is 3D and nothing is foreshortened.
-    const cv::Vec3f origin = (cR + cL) * 0.5f; // matches h.anchor exactly
-    auto inHead = [&](int i) {
-        const cv::Vec3f d = V(i) - origin;
-        return cv::Vec3f(d.dot(ex), d.dot(ey), d.dot(ez)) * (1.f / unit);
-    };
+    // frame is 3D and nothing is foreshortened -- and off the face at *rest*.
+    // The expression reaches the models through the mesh, point by point;
+    // measured off the live face, the chin dropping with the jaw would also
+    // stretch the whole model, and every expression would be counted twice.
+    auto inHead = [&](int i) { return f.rest[i]; };
     const cv::Vec3f crown = inHead(kForehead);
     const cv::Vec3f chin = inHead(kChin);
     const cv::Vec3f nose = inHead(kNoseTip);
@@ -1232,6 +1308,9 @@ bool FaceFilter::headFromFace(const Face& f, cv::Point2f off, double phase,
     // Expression. The warps read these too; a model that replaces the head
     // needs them or it is a mask sitting on a face rather than worn by one.
     h.expr = f.expr;
+    // And everything else the face is doing, landmark by landmark.
+    h.live = f.local;
+    h.rest = f.rest;
     return true;
 }
 

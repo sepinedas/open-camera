@@ -268,6 +268,15 @@ struct Mesh {
     float spec = 0.2f;
     int shin = 14; // specular exponent; integer, for fastPow
 
+    // How the face mesh moves it (see deform()). `jaw` picks which half of
+    // the face it follows. `bind` is where each vertex reads its motion from;
+    // empty, or shorter than `pos`, means from where the vertex itself is.
+    // A part that should ride the surface without stretching -- an eye, a
+    // tooth, a horn -- binds all its vertices to one point, so it moves as a
+    // piece with whatever it is set into.
+    bool jaw = false;
+    std::vector<Vec3f> bind;
+
     int add(const Vec3f& p, const Vec3f& c) {
         pos.push_back(p);
         col.push_back(c);
@@ -275,6 +284,13 @@ struct Mesh {
         return (int)pos.size() - 1;
     }
     void face(int a, int b, int c) { tri.emplace_back(a, b, c); }
+
+    // Bind every vertex from `from` on to `at`. Vertices before it that have
+    // no binding yet keep their own position.
+    void pin(int from, const Vec3f& at) {
+        for (size_t i = bind.size(); i < pos.size(); ++i) bind.push_back(pos[i]);
+        for (size_t i = (size_t)from; i < pos.size(); ++i) bind[i] = at;
+    }
 
     // Make every triangle wind outward, for a mesh that is star-shaped about
     // its own centroid.
@@ -475,6 +491,9 @@ Mesh buildEar(float side, float wiggle, const Head& h, const Style& st) {
         Vec3f pivot = attach;
         for (auto& p : m.pos) p = rotAbout(Rw, p, pivot);
     }
+    // Rides the head where it joins it, as a piece: stretched by the face's
+    // motion an ear would bend wherever the field happened to fade.
+    m.pin(0, attach);
     m.orientOutward();
     m.computeNormals();
     return m;
@@ -667,6 +686,7 @@ Mesh buildLobe(const Vec3f& centre, float rx, float ry, float rz,
             m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
             m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
         }
+    m.pin(0, centre);
     m.computeNormals();
     return m;
 }
@@ -719,6 +739,7 @@ Mesh buildIncisors(const Vec3f& top, float len, float halfW, float thick,
                 m.face(front[ti][ai], back[ti + 1][ai], front[ti + 1][ai]);
             }
     }
+    m.pin(0, top);
     m.computeNormals();
     return m;
 }
@@ -781,6 +802,7 @@ Mesh buildTaperTube(const Vec3f& base, float a0, float a1, float sideX,
         for (int i = 0; i < nSeg; ++i)
             m.face(c0, ring[nS - 1][i], ring[nS - 1][(i + 1) % nSeg]);
     }
+    m.pin(0, base);
     m.computeNormals();
     return m;
 }
@@ -831,6 +853,7 @@ Mesh buildCone(const Vec3f& base, const Vec3f& dir, const Vec3f& back,
                            tipCol);
     for (int i = 0; i < nSeg; ++i)
         m.face(ring[nT - 1][i], ring[nT - 1][(i + 1) % nSeg], apex);
+    m.pin(0, base);
     m.computeNormals();
     return m;
 }
@@ -888,6 +911,7 @@ Mesh buildTongue(const Vec3f& base, const Vec3f& tip, float halfW,
             m.face(top[ti][ai], bot[ti][ai], bot[ti + 1][ai]);
             m.face(top[ti][ai], bot[ti + 1][ai], top[ti + 1][ai]);
         }
+    m.pin(0, base);
     m.computeNormals();
     return m;
 }
@@ -910,6 +934,7 @@ struct Section {
     float z, cy, rx, ryUp, ryLo, gape;
 };
 
+bool mapped(const Head& h);
 struct HeadShape;
 Section sectionAt(float s, const HeadShape& p);
 Section coneSection(float s, const HeadShape& p);   // the shark's outline
@@ -973,6 +998,10 @@ struct HeadShape {
 };
 
 HeadShape sharkShape(const Head& h) {
+    // The mouth line's smile and sulk, when the mesh is not there to move it
+    // point by point (see MotionMap). With it, these would count it twice.
+    const float smile = mapped(h) ? 0.f : h.expr.smile;
+    const float sad = mapped(h) ? 0.f : h.expr.sad;
     HeadShape p{};
     p.crown = h.crownY;
     p.chin = h.chinY;
@@ -990,9 +1019,9 @@ HeadShape sharkShape(const Head& h) {
     // curls. Both are worth several times what they were: at the old
     // amplitudes neither was visible on a head this size.
     p.cyBack = h.crownY +
-               (0.56f - 0.30f * h.expr.smile + 0.20f * h.expr.sad) * len;
+               (0.56f - 0.30f * smile + 0.20f * sad) * len;
     // A smile also pulls the corners back, widening the gape.
-    const float wider = 0.07f * h.expr.smile;
+    const float wider = 0.07f * smile;
     p.cyTip = h.chinY + 0.34f * len;
     p.botBack = h.chinY + 0.12f * len;
     p.rxMax = h.headHalfW * 1.40f;
@@ -1155,6 +1184,10 @@ Vec3f hideAt(float v, float s, float ax, const HeadShape& p) {
 }
 
 HeadShape squirrelShape(const Head& h) {
+    // The mouth line's smile and sulk, when the mesh is not there to move it
+    // point by point (see MotionMap). With it, these would count it twice.
+    const float smile = mapped(h) ? 0.f : h.expr.smile;
+    const float sad = mapped(h) ? 0.f : h.expr.sad;
     HeadShape p{};
     p.crown = h.crownY;
     p.chin = h.chinY;
@@ -1203,7 +1236,7 @@ HeadShape squirrelShape(const Head& h) {
     // line also sets each cross-section's upper and lower radii, so shifting
     // it far does not curl the mouth -- it reshapes the whole head. The rest
     // of the expression goes to the ears, the eyes and the cheeks.
-    const float lift = (-0.15f * h.expr.smile + 0.10f * h.expr.sad) * len;
+    const float lift = (-0.15f * smile + 0.10f * sad) * len;
     for (int i = 0; i < kProfN; ++i) {
         const float t = (float)i / (kProfN - 1);
         p.mouth[i] += lift * std::pow(1.f - t, 0.55f);
@@ -1221,7 +1254,7 @@ HeadShape squirrelShape(const Head& h) {
     // A smile pulls the corners back, widening the gape.
     // Further back than the muzzle alone: with the hinge right at the
     // muzzle's root the mouth was too short for opening it to read.
-    p.sHinge = 0.52f - 0.09f * h.expr.smile;
+    p.sHinge = 0.52f - 0.09f * smile;
     p.zBack = 1.25f;
     p.zTip = h.noseZ - 0.35f;
     p.back = Vec3f(52, 92, 148);     // BGR: chestnut along the back
@@ -1235,6 +1268,10 @@ HeadShape squirrelShape(const Head& h) {
 }
 
 HeadShape elephantShape(const Head& h) {
+    // The mouth line's smile and sulk, when the mesh is not there to move it
+    // point by point (see MotionMap). With it, these would count it twice.
+    const float smile = mapped(h) ? 0.f : h.expr.smile;
+    const float sad = mapped(h) ? 0.f : h.expr.sad;
     HeadShape p{};
     p.crown = h.crownY;
     p.chin = h.chinY;
@@ -1259,7 +1296,7 @@ HeadShape elephantShape(const Head& h) {
     }
     p.sectionFn = muzzleSection;
     p.e = h.expr;
-    const float lift = (-0.13f * h.expr.smile + 0.09f * h.expr.sad) * len;
+    const float lift = (-0.13f * smile + 0.09f * sad) * len;
     for (int i = 0; i < kProfN; ++i) {
         const float t = (float)i / (kProfN - 1);
         p.mouth[i] += lift * std::pow(1.f - t, 0.55f);
@@ -1273,7 +1310,7 @@ HeadShape elephantShape(const Head& h) {
     // Broad rather than tall: an elephant's head is wider than it is deep
     // and wider than it is high, and the ears hang off the width of it.
     p.rxMax = h.headHalfW * 1.62f;
-    p.sHinge = 0.55f - 0.08f * h.expr.smile;
+    p.sHinge = 0.55f - 0.08f * smile;
     p.zBack = 1.30f;
     p.zTip = h.noseZ - 0.45f;
     p.back = Vec3f(112, 112, 118);   // BGR: elephant grey, barely warm
@@ -1287,6 +1324,10 @@ HeadShape elephantShape(const Head& h) {
 }
 
 HeadShape dinosaurShape(const Head& h) {
+    // The mouth line's smile and sulk, when the mesh is not there to move it
+    // point by point (see MotionMap). With it, these would count it twice.
+    const float smile = mapped(h) ? 0.f : h.expr.smile;
+    const float sad = mapped(h) ? 0.f : h.expr.sad;
     HeadShape p{};
     p.crown = h.crownY;
     p.chin = h.chinY;
@@ -1321,7 +1362,7 @@ HeadShape dinosaurShape(const Head& h) {
     p.e = h.expr;
     // Corners up for a smile and down for a sad face; the front of the snout
     // stays put, so the line between them curls into a grin or a sulk.
-    const float lift = (-0.16f * h.expr.smile + 0.11f * h.expr.sad) * len;
+    const float lift = (-0.16f * smile + 0.11f * sad) * len;
     for (int i = 0; i < kProfN; ++i) {
         const float t = (float)i / (kProfN - 1);
         p.mouth[i] += lift * std::pow(1.f - t, 0.55f);
@@ -1335,7 +1376,7 @@ HeadShape dinosaurShape(const Head& h) {
     p.rxMax = h.headHalfW * 1.42f;
     // Hinged far back: a T. rex's gape runs most of the length of its head,
     // and that long row of teeth is what it is.
-    p.sHinge = 0.26f - 0.06f * h.expr.smile;
+    p.sHinge = 0.26f - 0.06f * smile;
     p.zBack = 1.25f;
     p.zTip = h.noseZ - 1.05f;
     p.back = Vec3f(46, 104, 62);     // BGR: deep forest green
@@ -1469,6 +1510,8 @@ Mesh buildSharkTeeth(const HeadShape& p, bool upper, int nTooth = 11,
             const Vec3f tipP(side * c.rx * 0.80f, c.cy + dir * len, c.z);
             const int ia = m.add(a, root), ib = m.add(b, root);
             const int ii = m.add(inner, root), it = m.add(tipP, enamel);
+            // Rooted in the mouth line, and moved with it as a piece.
+            m.pin(ia, (a + b) * 0.5f);
             m.face(ia, ib, it);
             m.face(ib, ii, it);
             m.face(ii, ia, it);
@@ -1549,6 +1592,7 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
     // Finer than the shape alone needs: the lash line is a narrow band in
     // vOff, and at 14x6 it fell between samples and washed out to nothing.
     const int nSeg = 22, nRing = 10;
+    const int first = (int)m.pos.size();
     std::vector<std::vector<int>> ring(nRing);
     for (int r = 0; r < nRing; ++r) {
         const float lat = 0.5f * kPi * (float)r / (nRing - 1);
@@ -1588,6 +1632,9 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
             m.face(ring[r][i], ring[r][j], ring[r + 1][j]);
             m.face(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
         }
+    // Set into the head and carried by it, not stretched: its lids are its
+    // own (above), and the face's lids moving through it would smear it.
+    m.pin(first, centre);
 }
 
 // An eye on the surface of a lofted head, at a chosen depth and height.
@@ -1598,9 +1645,9 @@ void addEyeBead(Mesh& m, const HeadShape& p, const Vec3f& centre,
 // is what left the squirrel's far eye hanging in mid-air as soon as the head
 // turned: a point that looks like it is on the surface from the front need
 // not be on it at all.
-void addEyeAt(Mesh& m, const HeadShape& p, float sEye, float yEye, float R,
-              float side, float faceFwd, const Vec3f& col,
-              const Vec3f* iris = nullptr) {
+// Where addEyeAt() puts an eye. Split out because the point-by-point mapping
+// pairs the model's eyes with the face's, and has to know where they are.
+Vec3f eyeCentreAt(const HeadShape& p, float sEye, float yEye, float side) {
     const Section c = sectionAt(sEye, p);
     // Where this height falls on the section's ellipse, above or below the
     // mouth line, as a fraction of the radius on that side.
@@ -1608,7 +1655,18 @@ void addEyeAt(Mesh& m, const HeadShape& p, float sEye, float yEye, float R,
     const float ry = std::max(1e-3f, dy >= 0.f ? c.ryUp : c.ryLo);
     const float n = clampf(dy / ry, -0.97f, 0.97f);
     const float fx = std::sqrt(std::max(0.f, 1.f - n * n));
-    const Vec3f centre(side * c.rx * fx, yEye, c.z);
+    return Vec3f(side * c.rx * fx, yEye, c.z);
+}
+
+void addEyeAt(Mesh& m, const HeadShape& p, float sEye, float yEye, float R,
+              float side, float faceFwd, const Vec3f& col,
+              const Vec3f* iris = nullptr) {
+    const Section c = sectionAt(sEye, p);
+    const float dy = c.cy - yEye;
+    const float ry = std::max(1e-3f, dy >= 0.f ? c.ryUp : c.ryLo);
+    const float n = clampf(dy / ry, -0.97f, 0.97f);
+    const float fx = std::sqrt(std::max(0.f, 1.f - n * n));
+    const Vec3f centre = eyeCentreAt(p, sEye, yEye, side);
     // The ellipse's own outward normal, leaned toward the camera by
     // `faceFwd`: an eye on a rounded head should look a little forward rather
     // than straight out to the side, and the bead is anchored on the surface
@@ -1686,6 +1744,525 @@ Mesh buildSharkTrim(const HeadShape& p) {
     }
     m.computeNormals();
     return m;
+}
+
+// --- Point-by-point mapping of the face mesh --------------------------------
+//
+// The blendshape scores name a dozen things a face does. The mesh shows all of
+// them: every one of its 468 points has moved from where it sits at rest by
+// exactly what the face is doing there, lopsided smiles, sneers, a bitten lip
+// and all. So the models are moved by the mesh itself, vertex by vertex.
+//
+// Three steps. The face's displacements become a smooth field over the face
+// (faceMotion). Each model vertex is matched to a place on the face, by a warp
+// fitted between features the two have in common -- mouth corners to mouth
+// corners, eyes to eyes, chin to chin -- because a shark's mouth is not where
+// yours is, and moving it by whatever part of your face it happens to sit in
+// front of would be meaningless. Then the displacement there is carried back
+// through the inverse warp, so it arrives at the model's own scale: a smile
+// that lifts your mouth corners a few millimetres lifts the corners of a gape
+// three times the size of your mouth by three times as much (motionMap).
+//
+// The face mesh is seen from the front, so the field and the warp are both
+// over the head's (x, y): the face is close to a height field that way, and
+// it is the view the models are made to be seen from.
+
+constexpr int kMeshN = 468;
+
+// Which lip a landmark belongs to cannot be told from where it is -- with the
+// mouth shut the two inner lip lines lie on top of each other -- so the lips
+// are named outright, from MediaPipe's own lip contours.
+constexpr int kUpperLip[] = {185, 40, 39, 37, 0, 267, 269, 270, 409,
+                             191, 80, 81, 82, 13, 312, 311, 310, 415};
+constexpr int kLowerLip[] = {146, 91, 181, 84, 17, 314, 405, 321, 375,
+                             95, 88, 178, 87, 14, 317, 402, 318, 324};
+constexpr int kLipCorner[] = {61, 291, 78, 308};
+// The inner lip line, as upper and lower points matched across the mouth.
+constexpr int kInnerLip[][2] = {{78, 78},   {191, 95},  {80, 88},  {81, 178},
+                                {82, 87},   {13, 14},   {312, 317}, {311, 402},
+                                {310, 318}, {415, 324}, {308, 308}};
+// Landmarks the warp pairs with model features.
+constexpr int kLmMouthR = 61, kLmMouthL = 291, kLmForehead = 10, kLmChin = 152;
+constexpr int kLmNose = 1, kLmBrowR = 105, kLmBrowL = 334;
+constexpr int kLmCheekR = 234, kLmCheekL = 454, kLmJawR = 172, kLmJawL = 397;
+constexpr int kEyeR[] = {33, 133, 159, 145}, kEyeL[] = {263, 362, 386, 374};
+
+// The hinge of a human jaw in the head frame: in front of the ear, a little
+// below the eye line and well behind the face.
+const Vec3f kJawHinge(0.f, 0.40f, 1.05f);
+
+float smooth01(float a, float b, float x) {
+    const float t = clampf((x - a) / (b - a), 0.f, 1.f);
+    return t * t * (3.f - 2.f * t);
+}
+
+bool mapped(const Head& h) {
+    return (int)h.live.size() >= kMeshN && (int)h.rest.size() >= kMeshN;
+}
+
+// A regular grid of 3D values over a rectangle of the head's (x, y), with a
+// weight per node, sampled bilinearly. Zero outside.
+struct Field2 {
+    float x0 = 0.f, y0 = 0.f, cell = 1.f;
+    int nx = 0, ny = 0;
+    std::vector<Vec3f> v;
+    std::vector<float> w;
+
+    void init(float xa, float ya, float xb, float yb, float c) {
+        x0 = xa; y0 = ya; cell = c;
+        nx = (int)std::ceil((xb - xa) / c) + 1;
+        ny = (int)std::ceil((yb - ya) / c) + 1;
+        v.assign((size_t)nx * ny, Vec3f(0.f, 0.f, 0.f));
+        w.assign((size_t)nx * ny, 0.f);
+    }
+    Vec3f sample(float x, float y, float* wOut = nullptr) const {
+        if (wOut) *wOut = 0.f;
+        if (nx < 2 || ny < 2) return Vec3f(0.f, 0.f, 0.f);
+        const float fx = (x - x0) / cell, fy = (y - y0) / cell;
+        if (!(fx >= 0.f && fy >= 0.f && fx <= nx - 1 && fy <= ny - 1))
+            return Vec3f(0.f, 0.f, 0.f);
+        const int i = std::min((int)fx, nx - 2), j = std::min((int)fy, ny - 2);
+        const float a = fx - i, b = fy - j;
+        const size_t k = (size_t)j * nx + i;
+        const float c00 = (1 - a) * (1 - b), c10 = a * (1 - b);
+        const float c01 = (1 - a) * b, c11 = a * b;
+        if (wOut)
+            *wOut = w[k] * c00 + w[k + 1] * c10 + w[k + nx] * c01 +
+                    w[k + nx + 1] * c11;
+        return v[k] * c00 + v[k + 1] * c10 + v[k + nx] * c01 + v[k + nx + 1] * c11;
+    }
+};
+
+// The expression as two displacement fields over the face: one for what moves
+// with the skull, one for what moves with the jaw.
+//
+// Two, because the lips cannot share one. With the mouth shut the upper and
+// lower lip are a hair apart and move in opposite directions, and a single
+// smooth field averages them into nothing at exactly the line where the model
+// most needs to move: its mouth.
+struct FaceMotion {
+    Field2 upper, lower;
+    bool ok = false;
+};
+
+// Gaussian splat radius for the field, in eye separations. Wide enough that
+// the field has no holes between landmarks, narrow enough to keep a lip
+// apart from the cheek beside it.
+constexpr float kFieldSigma = 0.12f;
+constexpr float kFieldCell = 0.06f;
+// Splat weight at which a node counts as fully inside the face. A node in
+// the middle of the face collects ~10 landmarks' worth; the field fades out
+// over the last few tenths past the face's outline, rather than stopping.
+constexpr float kFieldFull = 4.0f;
+// Splat radius in cells: three sigmas.
+constexpr int kSplatRad = 6;
+static_assert(kSplatRad * kFieldCell >= 2.99f * kFieldSigma, "splat cut short");
+
+FaceMotion faceMotion(const Head& h, bool hinged) {
+    FaceMotion fm;
+    if (!mapped(h)) return fm;
+    const std::vector<Vec3f>& L = h.live;
+    const std::vector<Vec3f>& N = h.rest;
+
+    // How far the jaw has swung, read off the chin about the hinge, and taken
+    // back out of every point that moves with the jaw. The model has a hinge
+    // of its own, opened by jawOpen, and a model jaw that swung *and* was
+    // pushed down by the same motion would open twice. What is left is
+    // everything the jaw does besides swinging: thrust, a sideways shift, the
+    // lower lip curling or dropping on its own. A model without a hinge --
+    // the painted animals' parts -- keeps the swing, since nothing else will
+    // open its mouth.
+    auto angYZ = [](const Vec3f& d) { return std::atan2(d[2], d[1]); };
+    const float theta = hinged ? angYZ(L[kLmChin] - kJawHinge) -
+                                     angYZ(N[kLmChin] - kJawHinge)
+                               : 0.f;
+
+    // How much each landmark belongs to the jaw rather than the skull, from
+    // where it sits on the face at rest. Below the line between the lips it
+    // is the jaw's; above, the skull's. Out past the mouth corners there is
+    // no lip line to go by, so the cheeks change hands gradually, which is
+    // what they do on a real face.
+    float lipX[11], lipY[11];
+    for (int k = 0; k < 11; ++k) {
+        const Vec3f m = (N[kInnerLip[k][0]] + N[kInnerLip[k][1]]) * 0.5f;
+        lipX[k] = m[0];
+        lipY[k] = m[1];
+    }
+    if (lipX[0] > lipX[10]) { // the line runs whichever way the image does
+        std::reverse(lipX, lipX + 11);
+        std::reverse(lipY, lipY + 11);
+    }
+    auto lipLineY = [&](float x) {
+        if (x <= lipX[0]) return lipY[0];
+        for (int k = 0; k < 10; ++k)
+            if (x <= lipX[k + 1]) {
+                const float t = (x - lipX[k]) / std::max(1e-4f, lipX[k + 1] - lipX[k]);
+                return lipY[k] + (lipY[k + 1] - lipY[k]) * t;
+            }
+        return lipY[10];
+    };
+    const float mouthY = lipY[5];
+    const float cornerX = 0.5f * (lipX[10] - lipX[0]);
+
+    float jawW[kMeshN];
+    for (int i = 0; i < kMeshN; ++i) {
+        const float x = N[i][0], y = N[i][1];
+        const float inMouth = smooth01(cornerX + 0.15f, cornerX - 0.05f, std::fabs(x));
+        const float yl = lipLineY(x);
+        jawW[i] = inMouth * smooth01(yl - 0.02f, yl + 0.05f, y) +
+                  (1.f - inMouth) * smooth01(mouthY - 0.05f, mouthY + 0.35f, y);
+    }
+    for (int i : kUpperLip) jawW[i] = 0.f;
+    for (int i : kLowerLip) jawW[i] = 1.f;
+    for (int i : kLipCorner) jawW[i] = 0.5f;
+
+    fm.upper.init(-1.9f, -1.4f, 1.9f, 2.4f, kFieldCell);
+    fm.lower.init(-1.9f, -1.4f, 1.9f, 2.4f, kFieldCell);
+    const int rad = kSplatRad;
+    const float inv2s2 = 1.f / (2.f * kFieldSigma * kFieldSigma);
+    for (int i = 0; i < kMeshN; ++i) {
+        // Where the point would be if the jaw had only swung.
+        const float a = jawW[i] * theta;
+        const float ca = std::cos(a), sa = std::sin(a);
+        const Vec3f d = N[i] - kJawHinge;
+        const Vec3f swung = kJawHinge + Vec3f(d[0], ca * d[1] - sa * d[2],
+                                              sa * d[1] + ca * d[2]);
+        const Vec3f D = L[i] - swung;
+
+        const float px = N[i][0], py = N[i][1];
+        const int ci = (int)std::lround((px - fm.upper.x0) / kFieldCell);
+        const int cj = (int)std::lround((py - fm.upper.y0) / kFieldCell);
+        const int k0 = std::max(0, ci - rad), k1 = std::min(fm.upper.nx - 1, ci + rad);
+        const int j0 = std::max(0, cj - rad), j1 = std::min(fm.upper.ny - 1, cj + rad);
+        if (k0 > k1 || j0 > j1) continue;
+        // A Gaussian is the product of one along each axis, so the kernel is
+        // two short rows of exponentials rather than a square of them.
+        float gx[2 * kSplatRad + 1], gy[2 * kSplatRad + 1];
+        for (int k = k0; k <= k1; ++k) {
+            const float dx = fm.upper.x0 + k * kFieldCell - px;
+            gx[k - k0] = std::exp(-dx * dx * inv2s2);
+        }
+        for (int j = j0; j <= j1; ++j) {
+            const float dy = fm.upper.y0 + j * kFieldCell - py;
+            gy[j - j0] = std::exp(-dy * dy * inv2s2);
+        }
+        for (int j = j0; j <= j1; ++j)
+            for (int k = k0; k <= k1; ++k) {
+                const float g = gx[k - k0] * gy[j - j0];
+                if (g < 0.01f) continue;
+                const size_t n = (size_t)j * fm.upper.nx + k;
+                const float gu = g * (1.f - jawW[i]), gl = g * jawW[i];
+                fm.upper.v[n] += D * gu;
+                fm.upper.w[n] += gu;
+                fm.lower.v[n] += D * gl;
+                fm.lower.w[n] += gl;
+            }
+    }
+    // Normalise: the value is the weighted mean of the nearby displacements,
+    // and the weight becomes how much of the face is under this node, 0..1.
+    for (Field2* f : {&fm.upper, &fm.lower})
+        for (size_t n = 0; n < f->v.size(); ++n) {
+            const float s = f->w[n];
+            f->v[n] = s > 1e-4f ? f->v[n] * (1.f / s) : Vec3f(0.f, 0.f, 0.f);
+            f->w[n] = smooth01(0.f, kFieldFull, s);
+        }
+    fm.ok = true;
+    return fm;
+}
+
+// A thin-plate spline in the plane: the smoothest warp that carries a set of
+// points onto another set. With no points it is the identity.
+struct Tps {
+    std::vector<cv::Point2f> c;
+    std::vector<float> wx, wy;
+    float ax[3] = {0.f, 1.f, 0.f}, ay[3] = {0.f, 0.f, 1.f};
+
+    static float U(float r2) { return r2 > 1e-12f ? 0.5f * r2 * std::log(r2) : 0.f; }
+
+    cv::Point2f operator()(cv::Point2f p) const {
+        float x = ax[0] + ax[1] * p.x + ax[2] * p.y;
+        float y = ay[0] + ay[1] * p.x + ay[2] * p.y;
+        for (size_t i = 0; i < c.size(); ++i) {
+            const float dx = p.x - c[i].x, dy = p.y - c[i].y;
+            const float u = U(dx * dx + dy * dy);
+            x += wx[i] * u;
+            y += wy[i] * u;
+        }
+        return cv::Point2f(x, y);
+    }
+
+    // `stiff` trades exactness at the anchors for smoothness between them, so
+    // two anchors that crowd each other bend the warp rather than fold it.
+    bool fit(const std::vector<cv::Point2f>& src,
+             const std::vector<cv::Point2f>& dst, float stiff) {
+        const int n = (int)src.size(), m = n + 3;
+        if (n < 3) return false;
+        std::vector<double> A((size_t)m * m, 0.0), bx(m, 0.0), by(m, 0.0);
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                const float dx = src[i].x - src[j].x, dy = src[i].y - src[j].y;
+                A[(size_t)i * m + j] = U(dx * dx + dy * dy) + (i == j ? stiff : 0.f);
+            }
+            const double P[3] = {1.0, src[i].x, src[i].y};
+            for (int k = 0; k < 3; ++k) {
+                A[(size_t)i * m + n + k] = P[k];
+                A[(size_t)(n + k) * m + i] = P[k];
+            }
+            bx[i] = dst[i].x;
+            by[i] = dst[i].y;
+        }
+        // Gaussian elimination with partial pivoting; m is a dozen or two.
+        for (int col = 0; col < m; ++col) {
+            int piv = col;
+            for (int r = col + 1; r < m; ++r)
+                if (std::fabs(A[(size_t)r * m + col]) > std::fabs(A[(size_t)piv * m + col]))
+                    piv = r;
+            if (std::fabs(A[(size_t)piv * m + col]) < 1e-12) return false;
+            if (piv != col) {
+                for (int k = 0; k < m; ++k)
+                    std::swap(A[(size_t)col * m + k], A[(size_t)piv * m + k]);
+                std::swap(bx[col], bx[piv]);
+                std::swap(by[col], by[piv]);
+            }
+            for (int r = col + 1; r < m; ++r) {
+                const double f = A[(size_t)r * m + col] / A[(size_t)col * m + col];
+                if (f == 0.0) continue;
+                for (int k = col; k < m; ++k) A[(size_t)r * m + k] -= f * A[(size_t)col * m + k];
+                bx[r] -= f * bx[col];
+                by[r] -= f * by[col];
+            }
+        }
+        for (int r = m - 1; r >= 0; --r) {
+            for (int k = r + 1; k < m; ++k) {
+                bx[r] -= A[(size_t)r * m + k] * bx[k];
+                by[r] -= A[(size_t)r * m + k] * by[k];
+            }
+            bx[r] /= A[(size_t)r * m + r];
+            by[r] /= A[(size_t)r * m + r];
+        }
+        c = src;
+        wx.assign(n, 0.f);
+        wy.assign(n, 0.f);
+        for (int i = 0; i < n; ++i) {
+            wx[i] = (float)bx[i];
+            wy[i] = (float)by[i];
+        }
+        for (int k = 0; k < 3; ++k) {
+            ax[k] = (float)bx[n + k];
+            ay[k] = (float)by[n + k];
+        }
+        return true;
+    }
+};
+
+// Features a model shares with the face, as matched pairs in the head's
+// (x, y): the model's on the left, the face's at rest on the right.
+struct Anchors {
+    std::vector<cv::Point2f> model, face;
+    void add(cv::Point2f m, cv::Point2f f) {
+        model.push_back(m);
+        face.push_back(f);
+    }
+    // A left/right pair. The face's two are put in image order, which the
+    // mesh's own subject-side labels do not settle.
+    void addPair(cv::Point2f mRight, cv::Point2f fa, cv::Point2f fb) {
+        if (fa.x > fb.x) std::swap(fa, fb);
+        add(cv::Point2f(-mRight.x, mRight.y), fa);
+        add(mRight, fb);
+    }
+};
+
+// The model's displacement, at every point of its own (x, y): the face's
+// motion, carried across the warp and back at the model's scale.
+struct MotionMap {
+    Field2 upper, lower;
+    bool ok = false;
+};
+
+// How far the warp may miss its anchors to stay smooth between them. Enough
+// that the elephant's, whose eyes sit nearly level with its mouth corners,
+// bends instead of folding.
+constexpr float kWarpStiff = 0.10f;
+
+MotionMap motionMap(const FaceMotion& fm, const Anchors& an,
+                    const std::vector<const Mesh*>& meshes, float gain) {
+    MotionMap mm;
+    if (!fm.ok) return mm;
+    Tps toFace, toModel;
+    const bool warped = !an.model.empty();
+    if (warped && (!toFace.fit(an.model, an.face, kWarpStiff) ||
+                   !toModel.fit(an.face, an.model, kWarpStiff)))
+        return mm;
+    // Depth has no anchors of its own, so it is scaled by the warp's overall
+    // magnification: a model whose features sit twice as far apart as the
+    // face's moves twice as far front-to-back too.
+    float zScale = 1.f;
+    if (warped) {
+        const float det = toFace.ax[1] * toFace.ay[2] - toFace.ax[2] * toFace.ay[1];
+        zScale = clampf(1.f / std::sqrt(std::max(1e-4f, std::fabs(det))), 0.5f, 4.f);
+    }
+
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (const Mesh* m : meshes) {
+        for (const Vec3f& p : m->pos) {
+            x0 = std::min(x0, p[0]); x1 = std::max(x1, p[0]);
+            y0 = std::min(y0, p[1]); y1 = std::max(y1, p[1]);
+        }
+    }
+    if (x1 <= x0 || y1 <= y0) return mm;
+    // Fine enough that a lip's worth of motion keeps its shape, coarse
+    // enough that the per-node warp costs little next to the raster: each
+    // node is three spline evaluations, and the motion is smooth anyway.
+    const float cell = std::max(0.04f, std::max(x1 - x0, y1 - y0) / 40.f);
+    mm.upper.init(x0 - cell, y0 - cell, x1 + cell, y1 + cell, cell);
+    mm.lower.init(x0 - cell, y0 - cell, x1 + cell, y1 + cell, cell);
+    for (int j = 0; j < mm.upper.ny; ++j)
+        for (int i = 0; i < mm.upper.nx; ++i) {
+            const cv::Point2f p(mm.upper.x0 + i * cell, mm.upper.y0 + j * cell);
+            const cv::Point2f f = warped ? toFace(p) : p;
+            const cv::Point2f back = warped ? toModel(f) : f;
+            const size_t n = (size_t)j * mm.upper.nx + i;
+            const Field2* src[2] = {&fm.upper, &fm.lower};
+            Field2* dst[2] = {&mm.upper, &mm.lower};
+            for (int k = 0; k < 2; ++k) {
+                float w = 0.f;
+                const Vec3f D = src[k]->sample(f.x, f.y, &w);
+                if (w <= 1e-3f) continue;
+                const cv::Point2f to =
+                    warped ? toModel(cv::Point2f(f.x + D[0], f.y + D[1]))
+                           : cv::Point2f(f.x + D[0], f.y + D[1]);
+                dst[k]->v[n] = Vec3f(to.x - back.x, to.y - back.y, D[2] * zScale) *
+                               (w * gain);
+                dst[k]->w[n] = w;
+            }
+        }
+    mm.ok = true;
+    return mm;
+}
+
+// The least-squares affine map from `src` to `dst`: out = (A0 + A1 x + A2 y,
+// A3 + A4 x + A5 y). False when the points do not span the plane.
+bool fitAffine(const std::vector<cv::Point2f>& src,
+               const std::vector<cv::Point2f>& dst, float A[6]) {
+    // Normal equations, shared by both output coordinates.
+    double M[3][3] = {}, bx[3] = {}, by[3] = {};
+    for (size_t i = 0; i < src.size(); ++i) {
+        const double r[3] = {1.0, src[i].x, src[i].y};
+        for (int j = 0; j < 3; ++j) {
+            for (int k = 0; k < 3; ++k) M[j][k] += r[j] * r[k];
+            bx[j] += r[j] * dst[i].x;
+            by[j] += r[j] * dst[i].y;
+        }
+    }
+    const double det = M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) -
+                       M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
+                       M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+    if (std::fabs(det) < 1e-9) return false;
+    // Cramer's rule: three unknowns, so nothing cleverer is worth it.
+    auto solve = [&](const double* b, float* out) {
+        for (int c = 0; c < 3; ++c) {
+            double T[3][3];
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k) T[j][k] = (k == c) ? b[j] : M[j][k];
+            const double d = T[0][0] * (T[1][1] * T[2][2] - T[1][2] * T[2][1]) -
+                             T[0][1] * (T[1][0] * T[2][2] - T[1][2] * T[2][0]) +
+                             T[0][2] * (T[1][0] * T[2][1] - T[1][1] * T[2][0]);
+            out[c] = (float)(d / det);
+        }
+    };
+    solve(bx, A);
+    solve(by, A + 3);
+    return true;
+}
+
+// A lofted head's features, paired with the same features on the face.
+//
+// The model's mouth is the loft's mouth line seen from the front: corners at
+// the hinge, sweeping round to the point of the snout. Your mouth is nearly
+// straight across, so the warp has to bend one into the other, and the
+// points along it are what pin that bend down -- corners, a point halfway
+// out along each side, and the middle. With the eyes, the top of the head
+// and the chin, those are features the model really has, and they are
+// matched exactly.
+//
+// Everything else on the face -- nose, brows, cheeks, the angle of the jaw --
+// has no counterpart on a shark, and matching it to some invented point
+// folds the warp: the shark's gape runs up beside its eyes, so wherever its
+// "cheek" is put, it lands almost on top of the mouth corner, and the inverse
+// of a warp that squeezes that much face into that little model throws the
+// teeth off the side of the head. So those are carried across by the overall
+// fit of model to face instead (fitAffine below). They hold the warp to that
+// fit away from the features, rather than adding bends of their own.
+Anchors loftAnchors(const Head& h, const HeadShape& p, const Vec3f& eye) {
+    Anchors a;
+    const std::vector<Vec3f>& N = h.rest;
+    auto F = [&](int i) { return cv::Point2f(N[i][0], N[i][1]); };
+    auto Avg = [&](const int* ids, int n) {
+        cv::Point2f s(0.f, 0.f);
+        for (int k = 0; k < n; ++k) s = s + F(ids[k]);
+        return s * (1.f / (float)n);
+    };
+    const cv::Point2f fEyeA = Avg(kEyeR, 4), fEyeB = Avg(kEyeL, 4);
+
+    const Section corner = sectionAt(p.sHinge, p);
+    const Section front = sectionAt(1.f, p);
+    // Halfway out along the mouth line: the station whose width is half the
+    // corner's. Scanned rather than solved, since the outline is a spline.
+    Section half = corner;
+    float lowest = corner.cy + corner.ryLo;
+    for (int k = 0; k <= 48; ++k) {
+        const Section c = sectionAt((float)k / 48.f, p);
+        lowest = std::max(lowest, c.cy + c.ryLo);
+    }
+    for (int k = 0; k <= 48; ++k) {
+        const float s = p.sHinge + (1.f - p.sHinge) * (float)k / 48.f;
+        const Section c = sectionAt(s, p);
+        if (c.rx <= 0.5f * corner.rx) { half = c; break; }
+    }
+
+    a.addPair(cv::Point2f(corner.rx, corner.cy), F(kLmMouthR), F(kLmMouthL));
+    a.addPair(cv::Point2f(half.rx, half.cy), (F(81) + F(178)) * 0.5f,
+              (F(311) + F(402)) * 0.5f);
+    a.add(cv::Point2f(0.f, front.cy), (F(13) + F(14)) * 0.5f);
+    a.addPair(cv::Point2f(std::fabs(eye[0]), eye[1]), fEyeA, fEyeB);
+    a.add(cv::Point2f(0.f, p.topBack), F(kLmForehead));
+    a.add(cv::Point2f(0.f, lowest), F(kLmChin));
+
+    // The rest of the face, carried across by the fit of the features above.
+    float A[6];
+    if (!fitAffine(a.face, a.model, A)) return a;
+    auto carry = [&](cv::Point2f f) {
+        return cv::Point2f(A[0] + A[1] * f.x + A[2] * f.y,
+                           A[3] + A[4] * f.x + A[5] * f.y);
+    };
+    for (int i : {kLmNose, kLmBrowR, kLmBrowL, kLmCheekR, kLmCheekL, kLmJawR,
+                  kLmJawL})
+        a.add(carry(F(i)), F(i));
+    return a;
+}
+
+// How much the lofted heads exaggerate the face's motion.
+constexpr float kLoftGain = 1.5f;
+
+// How much of the motion reaches a point at depth z. The face is at the front
+// of the model; the back of a skull a head's depth behind it is not, and
+// moving it with the brows would only ripple the silhouette.
+constexpr float kMotionZNear = 0.80f, kMotionZFar = 1.80f;
+
+void deform(Mesh& m, const MotionMap& mm) {
+    if (!mm.ok) return;
+    const Field2& f = m.jaw ? mm.lower : mm.upper;
+    bool moved = false;
+    for (size_t i = 0; i < m.pos.size(); ++i) {
+        const Vec3f& q = i < m.bind.size() ? m.bind[i] : m.pos[i];
+        const float wz = smooth01(kMotionZFar, kMotionZNear, q[2]);
+        if (wz <= 0.f) continue;
+        const Vec3f d = f.sample(q[0], q[1]);
+        if (d.dot(d) < 1e-10f) continue;
+        m.pos[i] += d * wz;
+        moved = true;
+    }
+    if (moved) m.computeNormals();
 }
 
 // --- Projection + rasteriser -----------------------------------------------
@@ -1848,6 +2425,8 @@ void addSquirrelTrim(std::vector<Mesh>& out, const Head& head,
     nh.noseY = head.crownY + 0.97f * len;
     nh.noseZ = p.zTip + 0.03f;
     out.push_back(buildNose(nh, ns));
+    // A button: carried by the muzzle, not stretched by it.
+    out.back().pin(0, Vec3f(0.f, nh.noseY, nh.noseZ));
 
     // Buck teeth, from just under the nose and a shade in front of the
     // muzzle's face, so they show with the mouth shut as well as open --
@@ -2050,6 +2629,70 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
                              : (species == Species::Squirrel)
                                  ? squirrelShape(head)
                                  : elephantShape(head);
+        // Everything is built at rest first, then has the face's motion
+        // mapped onto it, and only then is the jaw swung: the mapping pairs
+        // the model's features with the face's as they sit at rest.
+        meshes.push_back(buildHeadHalf(sp, true));
+        Mesh jaw = buildHeadHalf(sp, false);
+        Mesh tongue = buildMuzzleTongue(sp, dino ? 0.92f : 10.f);
+        jaw.jaw = tongue.jaw = true;
+        // The jaw and everything in it are one group: they hinge together,
+        // and slide together when the jaw is worked to one side.
+        std::vector<Mesh*> group{&jaw, &tongue};
+        Mesh upTeeth, lowTeeth;
+        const bool teeth = shark || dino;
+        if (shark) {
+            upTeeth = buildSharkTeeth(sp, true);
+            lowTeeth = buildSharkTeeth(sp, false);
+        } else if (dino) {
+            const Vec3f enamel(214, 236, 242), root(150, 186, 200);
+            upTeeth = buildSharkTeeth(sp, true, 8, 1.35f, enamel, root);
+            lowTeeth = buildSharkTeeth(sp, false, 7, 1.15f, enamel, root);
+        }
+        lowTeeth.jaw = true;
+        if (teeth) {
+            meshes.push_back(std::move(upTeeth));
+            group.push_back(&lowTeeth);
+        }
+        // Where the eyes are: the trim builders place them, and the mapping
+        // pairs them with the face's.
+        const float len = head.chinY - head.crownY;
+        Vec3f eye;
+        if (shark) {
+            // The same parameters the eyes had when they lived inside
+            // buildSharkTrim, before the other two needed them too.
+            meshes.push_back(buildEyeBeads(sp, 0.34f, 0.52f, 0.140f * sp.rxMax,
+                                           Vec3f(16, 15, 18), 0.30f, 0.34f, 26));
+            meshes.push_back(buildSharkTrim(sp));
+            const Section ce = sectionAt(0.34f, sp);
+            eye = Vec3f(ce.rx * std::cos(0.52f) * 0.99f,
+                        ce.cy - ce.ryUp * std::sin(0.52f) * 0.99f, ce.z);
+        } else if (dino) {
+            addDinosaurTrim(meshes, head, sp);
+            eye = eyeCentreAt(sp, 0.46f, head.crownY + 0.30f * len, 1.f);
+        } else if (species == Species::Squirrel) {
+            addSquirrelTrim(meshes, head, sp);
+            eye = eyeCentreAt(sp, 0.52f, head.crownY + 0.26f * len, 1.f);
+        } else {
+            addElephantTrim(meshes, head, sp);
+            eye = eyeCentreAt(sp, 0.74f, head.crownY + 0.42f * len, 1.f);
+        }
+
+        // The face's motion, point by point. Exaggerated a little: these
+        // heads are cartoons, and a cartoon's expressions are bigger than
+        // the face making them.
+        const bool meshDriven = mapped(head);
+        if (meshDriven) {
+            std::vector<const Mesh*> all;
+            for (const Mesh& m : meshes) all.push_back(&m);
+            for (const Mesh* m : group) all.push_back(m);
+            const MotionMap mm = motionMap(faceMotion(head, true),
+                                           loftAnchors(head, sp, eye), all,
+                                           kLoftGain);
+            for (Mesh& m : meshes) deform(m, mm);
+            for (Mesh* m : group) deform(*m, mm);
+        }
+
         // A little always ajar, so the teeth show even with the mouth shut,
         // then opened the rest of the way by the jawOpen blendshape.
         // How far the jaw drops. A shark's gape is enormous and the others
@@ -2064,42 +2707,35 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         // +x is the head's right, so a positive rotation about it swings
         // what is in front of the hinge downward -- the jaw dropping open.
         const Matx33f Rj = rotAxis(Vec3f(1.f, 0.f, 0.f), ang);
-
-        meshes.push_back(buildHeadHalf(sp, true));
-        Mesh jaw = buildHeadHalf(sp, false);
-        Mesh tongue = buildMuzzleTongue(sp, dino ? 0.92f : 10.f);
-        // The jaw and everything in it are one group: they hinge together,
-        // and slide together when the jaw is worked to one side.
-        std::vector<Mesh*> group{&jaw, &tongue};
-        Mesh upTeeth, lowTeeth;
-        const bool teeth = shark || dino;
-        if (shark) {
-            upTeeth = buildSharkTeeth(sp, true);
-            lowTeeth = buildSharkTeeth(sp, false);
-        } else if (dino) {
-            const Vec3f enamel(214, 236, 242), root(150, 186, 200);
-            upTeeth = buildSharkTeeth(sp, true, 8, 1.35f, enamel, root);
-            lowTeeth = buildSharkTeeth(sp, false, 7, 1.15f, enamel, root);
-        }
-        if (teeth) {
-            meshes.push_back(std::move(upTeeth));
-            group.push_back(&lowTeeth);
-        }
-        const float slide = 0.22f * head.expr.jawSide * sp.rxMax;
+        // Worked to one side. The mapped motion already carries the jaw's
+        // sideways shift, so the blendshape only drives it without a mesh.
+        const float slide =
+            meshDriven ? 0.f : 0.22f * head.expr.jawSide * sp.rxMax;
         // Behind the hinge the jaw is a whole cross-section of the head, not
         // half of one (see buildHeadHalf), so swinging it rigidly lifts a
         // skull-sized cap up over the top of the head. On the dinosaur, whose
         // hinge is far back, that cap covered the eyes whenever the mouth
-        // opened. So there the swing fades in across the hinge instead: the
-        // back of the jaw stays put and only what is in front of it drops.
+        // opened, and so it did on the squirrel and the elephant once their
+        // heads were sized from the face at rest, which is longer in the jaw
+        // than the open-mouthed one they used to be measured from. So for
+        // all but the shark, whose hinge is right at the back, the swing
+        // fades in across the hinge instead: the back of the jaw stays put
+        // and only what is in front of it drops.
         const float ramp = 0.30f;
         for (Mesh* j : group) {
             for (auto& q : j->pos) {
-                if (dino) {
+                if (!shark) {
                     // The sideways slide fades in the same way, or the back
                     // of the jaw slides out past the skull as a slab.
                     float w = clampf((pivot[2] - q[2]) / ramp, 0.f, 1.f);
                     w = w * w * (3.f - 2.f * w);
+                    // Where the jaw stays put it is the very surface of the
+                    // skull -- behind the hinge both are whole ellipses --
+                    // and the two z-fight into specks on top of the head.
+                    // Tucked a hair inside, the skull wins cleanly.
+                    const float tuck = 1.f - 0.015f * (1.f - w);
+                    q[0] *= tuck;
+                    q[1] = pivot[1] + (q[1] - pivot[1]) * tuck;
                     q = rotAbout(rotAxis(Vec3f(1.f, 0.f, 0.f), ang * w), q, pivot);
                     q[0] += slide * w;
                 } else {
@@ -2112,19 +2748,6 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
         meshes.push_back(std::move(jaw));
         if (teeth) meshes.push_back(std::move(lowTeeth));
         meshes.push_back(std::move(tongue));
-        if (shark) {
-            // The same parameters the eyes had when they lived inside
-            // buildSharkTrim, before the other two needed them too.
-            meshes.push_back(buildEyeBeads(sp, 0.34f, 0.52f, 0.140f * sp.rxMax,
-                                           Vec3f(16, 15, 18), 0.30f, 0.34f, 26));
-            meshes.push_back(buildSharkTrim(sp));
-        } else if (dino) {
-            addDinosaurTrim(meshes, head, sp);
-        } else if (species == Species::Squirrel) {
-            addSquirrelTrim(meshes, head, sp);
-        } else {
-            addElephantTrim(meshes, head, sp);
-        }
     } else {
         const Style st = styleFor(species);
         // Ears answer the brows. Raising them pricks the ears up and out,
@@ -2154,6 +2777,17 @@ std::vector<Mesh> buildMeshes(const Head& head, Species species) {
             meshes.push_back(buildTongue(base, tip, 0.27f * head.headHalfW,
                                          0.05f * head.headHalfW, -0.22f,
                                          st.tongueCol));
+            meshes.back().jaw = true;
+        }
+        // These parts sit on the face itself, so each vertex follows the
+        // face exactly where it is: no warp, and no exaggeration, or the nose
+        // would slide off the painted muzzle under it.
+        if (mapped(head)) {
+            std::vector<const Mesh*> all;
+            for (const Mesh& m : meshes) all.push_back(&m);
+            const MotionMap mm =
+                motionMap(faceMotion(head, false), Anchors{}, all, 1.f);
+            for (Mesh& m : meshes) deform(m, mm);
         }
     }
 
@@ -2176,18 +2810,73 @@ cv::Rect meshBounds(const std::vector<Mesh>& meshes, const Head& head,
     return roi & cv::Rect(0, 0, w, h);
 }
 
+// The model for `head`, built once per frame however often it is asked for.
+//
+// The preview asks twice -- bounds() to size the region it converts, then
+// render() to draw into it -- with the same face, and building the model is
+// most of the cost that is not rasterising: the lofts, and since the mapping,
+// the face's motion field and the warp. Nothing that goes into the model
+// depends on where it lands on screen or how big it is (R, unit and anchor
+// only enter at projection), so those are left out of the comparison, which
+// also lets the two calls differ by the region origin the way they do.
+// render() is called from the one preview path, as the scratch buffers
+// below already assume, so a single entry is enough.
+const std::vector<Mesh>& modelFor(const Head& head, Species species) {
+    struct Entry {
+        bool valid = false;
+        Species species = Species::Dog;
+        float shape[5] = {};
+        Expression expr;
+        double phase = 0.0;
+        std::vector<Vec3f> live, rest;
+        std::vector<Mesh> meshes;
+    };
+    static Entry cache;
+    const float shape[5] = {head.headHalfW, head.crownY, head.noseY,
+                            head.noseZ, head.chinY};
+    auto sameVec = [](const std::vector<Vec3f>& a, const std::vector<Vec3f>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            for (int k = 0; k < 3; ++k)
+                if (a[i][k] != b[i][k]) return false;
+        return true;
+    };
+    const Expression& e = head.expr;
+    const Expression& c = cache.expr;
+    const bool hit =
+        cache.valid && cache.species == species &&
+        std::equal(shape, shape + 5, cache.shape) && cache.phase == head.phase &&
+        e.jawOpen == c.jawOpen && e.smile == c.smile && e.frown == c.frown &&
+        e.sad == c.sad && e.blinkL == c.blinkL && e.blinkR == c.blinkR &&
+        e.browUp == c.browUp && e.browDown == c.browDown &&
+        e.pucker == c.pucker && e.cheekPuff == c.cheekPuff &&
+        e.tongue == c.tongue && e.jawSide == c.jawSide &&
+        sameVec(head.live, cache.live) && sameVec(head.rest, cache.rest);
+    if (!hit) {
+        cache.meshes = buildMeshes(head, species);
+        cache.valid = true;
+        cache.species = species;
+        std::copy(shape, shape + 5, cache.shape);
+        cache.expr = head.expr;
+        cache.phase = head.phase;
+        cache.live = head.live;
+        cache.rest = head.rest;
+    }
+    return cache.meshes;
+}
+
 cv::Rect bounds(const Head& head, Species species) {
     if (head.unit < 12.f) return cv::Rect();
     // A frame-sized clip, because the caller intersects with the frame itself.
     const int big = 1 << 20;
-    return meshBounds(buildMeshes(head, species), head, big, big);
+    return meshBounds(modelFor(head, species), head, big, big);
 }
 
 void render(cv::Mat& frame, const Head& head, Species species) {
     if (frame.empty() || frame.type() != CV_8UC3) return;
     if (head.unit < 12.f) return; // too small to render cleanly
 
-    const std::vector<Mesh> meshes = buildMeshes(head, species);
+    const std::vector<Mesh>& meshes = modelFor(head, species);
     const cv::Rect roi = meshBounds(meshes, head, frame.cols, frame.rows);
     if (roi.width < 2 || roi.height < 2) return;
 

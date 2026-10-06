@@ -114,7 +114,32 @@ private:
         // oriented by a real 3D basis read off the face rather than by angles
         // inferred from where features sit in a flat box.
         std::vector<cv::Point3f> mesh3;
+
+        // The head's own frame, read off mesh3 (see headBasis in the .cpp):
+        // unit right/down/back axes, the eye midpoint they hang from, and the
+        // eye separation that is the frame's unit length. Zero `unit` when the
+        // mesh could not give one.
+        cv::Vec3f ex, ey, ez, origin;
+        float unit = 0.f;
+        // The mesh in that frame, now and at rest. Their difference is the
+        // expression, landmark by landmark, which is what the 3D models are
+        // moved by (see face3d::Head::live).
+        std::vector<cv::Vec3f> local, rest;
     };
+
+    // One face's mesh at rest, carried from frame to frame. The models need
+    // to know what this face looks like doing nothing, to tell what it is
+    // doing now; it is learnt while the expression scores say the face is
+    // relaxed, and matched to each frame's faces by where they are.
+    struct RestTrack {
+        cv::Point2f centre;
+        std::vector<cv::Vec3f> mesh;
+        int missed = 0; // frames since it was last matched
+    };
+
+    // Measure `f`'s head frame and its mesh in it, then match it to a rest
+    // track and fill `f.rest`. Part of detect().
+    void trackRest(Face& f);
 
     // MediaPipe landmarker + the scratch buffers it needs; defined in the .cpp
     // so the MediaPipe headers stay out of everything that includes this file.
@@ -164,6 +189,7 @@ private:
     std::unique_ptr<Landmarker> lm_;
     bool warned_ = false;     // "no model" logged only once
     std::vector<Face> faces_; // last detection result, full-res coords
+    std::vector<RestTrack> rests_;
 };
 
 // Search the usual install locations for MediaPipe's `face_landmarker.task`

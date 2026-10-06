@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <opencv2/core.hpp>
 
 #include "types.hpp"
@@ -65,6 +67,17 @@ struct Head {
     // jaw, narrows its eyes, curls its gape and puts its tongue out from
     // these; the animals tilt their ears and loll a tongue.
     Expression expr;
+
+    // The whole face mesh, point by point, in the same frame and units: where
+    // every landmark is now, and where it sits on this face at rest. Their
+    // difference *is* the expression -- every muscle the mesh can see, not
+    // just the dozen the blendshape scores name -- and render() maps it onto
+    // the model vertex by vertex (see MotionMap in the .cpp), so a lopsided
+    // smile, a sneer or a lip bite moves the shark's mouth the way it moves
+    // yours. Empty when there is no mesh, in which case the models fall back
+    // to being driven by `expr` alone. The proportions above should be
+    // measured from `rest`, or the expression gets counted twice.
+    std::vector<cv::Vec3f> live, rest;
 
     double phase = 0.0; // free-running frame counter; drives the ear wiggle
 };

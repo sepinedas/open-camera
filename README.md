@@ -400,9 +400,12 @@ you then capture.
     head and shows the shark's teeth, fewer and bigger. A hinge that far back
     exposed something the others got away with: behind the hinge the jaw is a
     whole cross-section of the head, so swinging it rigidly lifted a
-    skull-sized cap over the eyes. The dinosaur fades the swing (and the
-    sideways slide) in across the hinge instead, so only what is in front of
-    it moves.
+    skull-sized cap over the eyes. Every head but the shark (whose hinge is
+    right at the back) now fades the swing, and the sideways slide, in
+    across the hinge, so only what is in front of it moves. The squirrel and
+    elephant needed it too once they were sized from the face at rest, which
+    is longer in the jaw. Where the jaw stays put it is tucked a hair inside
+    the skull, or the two coincide and z-fight into specks on top of the head.
 
     Over it go amber eyes with a vertical slit pupil, a bony horn over each
     eye that stands up on raised brows and splays out on a scowl or a sad
@@ -456,21 +459,62 @@ of poses. That was sizing every frame's colour conversion for the worst case
 
 ### What the filters read off your face
 
-MediaPipe's Face Landmarker returns the ARKit-style set of 52 blendshape
+**The 3D models follow the face mesh point by point.** Every one of the 468
+landmarks has moved from where it sits on your face at rest by exactly what
+your face is doing there. So the models aren't limited to a dozen named
+scores: a lopsided smile, a sneer, a pucker, a dropped lower lip or a jaw
+worked sideways all move the model the way they move you. It works in three
+steps:
+
+1. **Rest.** `detect()` measures each face in its own head frame and keeps a
+   per-face mesh *at rest*. It's seeded from the first frame and learnt only
+   while the blendshape scores say the face is relaxed, so a held smile isn't
+   learnt as neutral. The expression is `live − rest`, landmark by landmark.
+   The head frame's vertical axis runs forehead → under the nose, not
+   forehead → chin as it used to. The chin drops when the mouth opens, and
+   that pitched the whole frame by ~10°, which would now read as motion
+   everywhere on the face. At rest the new frame matches the old one to
+   0.02°, so every model still sits where it was tuned. The models are also
+   *sized* from the rest face, or the jaw dropping would stretch them too.
+2. **Field.** `face3d` turns the 468 displacements into a smooth field over
+   the face, in two layers: one moves with the skull, one with the jaw. They
+   are separate because the two lips lie a hair apart and move in opposite
+   directions, and one field would average them into nothing at exactly the
+   line the model most needs to move. The jaw's swing is taken out of the jaw
+   layer first, because the models have hinges of their own (see below) and
+   would otherwise open twice.
+3. **Retarget.** A shark's mouth isn't where yours is, so each whole-head
+   model has a thin-plate-spline warp fitted between features it really
+   shares with a face: mouth corners, the lip line, eyes, top of head, chin.
+   The face's motion is carried back through the inverse warp, so it arrives
+   at the model's scale. A mouth corner that lifts a few millimetres lifts a
+   gape three times the size of your mouth three times as far. Features a
+   shark has no counterpart for (nose, brows, cheeks) are placed by the
+   overall fit rather than matched. Matching them to invented points folded
+   the warp and threw the teeth off the side of the head. Eyes, teeth,
+   horns, tusks and ears ride the surface as rigid pieces rather than
+   stretching with it. The painted animals' noses, snouts and tongues sit on
+   the face itself, so they follow it with no warp at all.
+
+Without a mesh (a bundle that has none, or the render harness) the models
+fall back to the scores below, as before.
+
+MediaPipe's Face Landmarker also returns the ARKit-style set of 52 blendshape
 scores alongside the mesh. `Expression` (in `types.hpp`) carries the ones the
-filters use from `detect()` through to the models, so a rigid 3D model can act
-rather than just sit on the face:
+filters use from `detect()` through to the models. Where an articulation
+needs a single number (the jaw's hinge, a lid closing over an eye, an ear
+swinging) it comes from these:
 
 | | driven by | what it does |
 |---|---|---|
 | jaw | `jawOpen` | the shark's and dinosaur's jaws hinge; the warps stretch the mouth |
-| smile | `mouthSmile*` | lifts the corners of the gape and pulls them back, widening it; rounds the squirrel's cheeks; lifts the elephant's ears and curls its trunk |
+| smile | `mouthSmile*` | rounds the squirrel's cheeks; lifts the elephant's ears and curls its trunk. The gape's own curl comes from the mesh (without one, from this score) |
 | sad | `mouthFrown*` **and** `browInnerUp` | drops the corners, lays the ears back, and half-lids the eyes |
 | blink | **eyelid landmarks**, not a blendshape | a lid slides down the eye of whichever model is worn |
 | brows | `browInnerUp`, `browOuterUp*`, `browDown*` | the animals prick their ears up, or lay them back; the dinosaur stands its brow horns up or splays them |
 | tongue | `tongueOut`, and the jaw | a tongue comes out — the shark's along the floor of its jaw, the animals' out of the muzzle |
 | trunk | `jawOpen` | raises and curls the elephant's trunk |
-| jaw sideways | `jawLeft` / `jawRight` | slides the shark's (or dinosaur's) lower jaw, teeth and tongue as one group |
+| jaw sideways | `jawLeft` / `jawRight` | without a mesh, slides the shark's (or dinosaur's) lower jaw, teeth and tongue as one group; with one, the mesh's own sideways jaw motion does it |
 | cheeks | `cheekPuff` | fills out the squirrel's cheek pouches |
 | pucker | `mouthPucker` | curls the tip of the elephant's trunk |
 
