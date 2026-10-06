@@ -57,11 +57,11 @@ bool Gallery::currentIsVideo() const {
     return !empty() && isVideo(files_[index_]);
 }
 
-void Gallery::next() {
+void Gallery::older() {
     if (!atOldest()) ++index_;
 }
 
-void Gallery::prev() {
+void Gallery::newer() {
     if (!atNewest()) --index_;
 }
 

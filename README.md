@@ -36,6 +36,9 @@ A touch-friendly, **icon-only** camera app for the **Raspberry Pi 5**
   before when no HAT is fitted.
 - Built-in **gallery**: browse captured photos, **play** back any videos
   already on disk, and **delete** items behind an icon-only ✓ / ✗ confirmation.
+  It reads like a timeline: it opens on the newest capture, and **◀ goes back
+  to older ones** (▶ comes forward again). **Pinch a photo to zoom in** (up
+  to 6×, about your fingers) and **drag with one finger to pan** around it.
   The capture **date & time** is shown translucent across the top.
 - **WhatsApp-style facial filters** (smiley button): a **Big Smile** that
   stretches your mouth into a wide grin — with your teeth brightening as you
@@ -704,6 +707,7 @@ build/open-lego-camera --mirror none   # show the Pi camera the way it sees
 - **Tap the screen** to wake the menu after it has faded.
 - **Esc** or **Q** steps back one screen: camera → welcome, gallery → camera,
   and quits from the welcome screen. Any key wakes the screen from sleep.
+  In the gallery, **←** / **→** step to older / newer items.
 - `--windowed` is handy when developing on a desktop (the app then uses the
   desktop's SDL driver automatically).
 
@@ -1024,7 +1028,7 @@ line.
 | last-shot thumbnail (framed-landscape icon until the first capture) | open the gallery |
 | ring with dot | take a photo (plays a shutter flash) |
 | chevron (gallery) | back to the camera |
-| ◀ / ▶ triangles (gallery) | previous / next item |
+| ◀ / ▶ triangles (gallery) | older / newer item (the gallery opens on the newest, at the right end) |
 | triangle-in-ring (gallery) | play the selected video |
 | trash can (gallery) | delete the shown item (asks ✓ / ✗) |
 | ✓ green / ✗ red | confirm / cancel a delete |
@@ -1032,6 +1036,11 @@ line.
 **Zoom** is not a button: **pinch with two fingers** on the preview to zoom
 (digital, up to 4×). The current factor (`1.0x`–`4.0x`) appears briefly at the
 top while you pinch.
+
+In the gallery, the same pinch zooms the **photo** being viewed instead (up to
+6×), growing out of the point between your fingers; while zoomed in, **drag
+with one finger** to move around it. Stepping to another item resets the zoom.
+Videos are not zoomed — what the gallery shows of one is just its first frame.
 
 ## Design notes
 

@@ -22,12 +22,13 @@ public:
     const std::string& current() const { return files_[index_]; }
     bool currentIsVideo() const;
 
-    // Step towards older (next) or newer (prev) items. The list does not wrap:
-    // the newest item is the left end of the strip and the oldest the right
-    // end, so the left arrow at the newest photo (or the right one at the
-    // oldest) stays put instead of jumping to the far end.
-    void next();
-    void prev();
+    // Step towards older or newer items. The strip reads like a timeline:
+    // the past is to the left and the newest item is the right end, where the
+    // gallery opens. The list does not wrap, so the left arrow at the oldest
+    // photo (or the right one at the newest) stays put instead of jumping to
+    // the far end.
+    void older();
+    void newer();
     bool atNewest() const { return index_ <= 0; }
     bool atOldest() const { return index_ >= count() - 1; }
 

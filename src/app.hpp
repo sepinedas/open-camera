@@ -36,7 +36,9 @@ private:
     // --- display helpers ---
     bool initDisplay();
     // Letterboxed blit of a BGR frame, optionally rotated clockwise (0/90/180/270).
-    void renderMat(const cv::Mat& mat, int rotate = 0);
+    // `crop`, when given, is the part of the image to show (the gallery zoom).
+    void renderMat(const cv::Mat& mat, int rotate = 0,
+                   const SDL_Rect* crop = nullptr);
     // Upload a camera frame (native NV12 or BGR) and blit it letterboxed into
     // the view. `src` (in image pixels) selects the region to show, so digital
     // zoom is a GPU crop-and-scale; null shows the whole image. For NV12 the
@@ -180,6 +182,24 @@ private:
     double pinchStartDist_ = 0.0;
     double pinchStartZoom_ = 1.0;
     Uint32 zoomLabelUntil_ = 0;      // keep the factor visible briefly after a change
+
+    // Gallery zoom. Pinching a photo magnifies it about the fingers and one
+    // finger pans it; the camera's own zoom is left alone. The pan point is
+    // the image point at the centre of the screen, as a fraction of the
+    // image, so it survives not knowing the image's size until it is decoded.
+    double galleryZoom_ = 1.0;
+    double galleryPanX_ = 0.5, galleryPanY_ = 0.5;
+    double pinchAnchorX_ = 0.5, pinchAnchorY_ = 0.5; // image point under the pinch
+    void resetGalleryZoom();
+    bool galleryZoomable() const; // a photo is shown (videos are not zoomed)
+    // The crop of the shown photo that fills the screen at the current zoom,
+    // with the pan clamped so it never leaves the image.
+    SDL_Rect galleryCrop();
+    // Screen <-> image, as fractions of the image, at the current zoom/pan.
+    void galleryViewToImage(double vx, double vy, double& u, double& v) const;
+    double galleryCoverScale() const; // screen px per image px at 1x
+    void fingerToView(float nx, float ny, double& vx, double& vy) const;
+    bool fingerMidView(double& vx, double& vy) const; // midpoint of two fingers
     bool tapCandidate_ = false;      // one finger down, not yet a drag/pinch
     SDL_FingerID tapFinger_ = 0;
     float tapStartX_ = 0, tapStartY_ = 0;

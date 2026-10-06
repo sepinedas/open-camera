@@ -20,6 +20,11 @@
 
 namespace olc {
 
+// How far a photo in the gallery can be pinched in. Further than the live
+// camera's digital zoom: a still is full resolution, so there is detail to
+// find, and nothing has to be re-encoded at that size every frame.
+static constexpr double kGalleryMaxZoom = 6.0;
+
 // Rotate a BGR frame clockwise by `deg` (0/90/180/270). Returns a rotated copy;
 // for 0 (or any non-multiple) it returns the input unchanged. Used to bake the
 // camera-image rotation into captured stills so they match the preview.
@@ -417,7 +422,7 @@ void App::powerOffLowBattery() {
 // Blit a BGR cv::Mat to the screen, preserving aspect ratio (letterboxed).
 // Used for decoded gallery/playback frames; the live preview goes through
 // blitCamera so it can keep NV12 and zoom on the GPU.
-void App::renderMat(const cv::Mat& src, int rotate) {
+void App::renderMat(const cv::Mat& src, int rotate, const SDL_Rect* crop) {
     clear();
     if (src.empty()) return;
 
@@ -427,7 +432,7 @@ void App::renderMat(const cv::Mat& src, int rotate) {
     else if (src.channels() == 1) cv::cvtColor(src, bgr, cv::COLOR_GRAY2BGR);
     else bgr = src;
 
-    blitCamera(bgr, PixelFormat::BGR, bgr.cols, bgr.rows, nullptr, rotate);
+    blitCamera(bgr, PixelFormat::BGR, bgr.cols, bgr.rows, crop, rotate);
 }
 
 // Upload a camera frame and blit it letterboxed. For NV12 we hand SDL the raw
@@ -565,6 +570,12 @@ void App::pumpEvents() {
                     if (mode_ == Mode::Welcome) running_ = false; // quit the app
                     else if (mode_ == Mode::Camera) goHome();     // back to welcome
                     else mode_ = Mode::Camera;                    // step back to preview
+                } else if (mode_ == Mode::Gallery &&
+                           (e.key.keysym.sym == SDLK_LEFT ||
+                            e.key.keysym.sym == SDLK_RIGHT)) {
+                    menu_.wake();
+                    dispatch(e.key.keysym.sym == SDLK_LEFT ? Action::Prev
+                                                           : Action::Next);
                 } else {
                     menu_.wake();
                 }
@@ -657,19 +668,60 @@ void App::handleFingerDown(const SDL_TouchFingerEvent& f) {
         tapCandidate_ = false;
         pinching_ = true;
         pinchStartDist_ = fingerSpread();
-        pinchStartZoom_ = cam_->zoom();
         zoomLabelUntil_ = SDL_GetTicks() + 1200;
+        if (mode_ == Mode::Gallery) {
+            // The photo, not the camera behind it. Remember which point of
+            // the image is under the fingers, so the zoom grows out of it.
+            pinchStartZoom_ = galleryZoom_;
+            double mx, my;
+            if (fingerMidView(mx, my))
+                galleryViewToImage(mx, my, pinchAnchorX_, pinchAnchorY_);
+        } else {
+            pinchStartZoom_ = cam_->zoom();
+        }
     }
 }
 
 void App::handleFingerMotion(const SDL_TouchFingerEvent& f) {
     auto it = fingers_.find(f.fingerId);
-    if (it != fingers_.end()) it->second = {f.x, f.y, f.timestamp};
+    float lastX = f.x, lastY = f.y;
+    if (it != fingers_.end()) {
+        lastX = it->second.x;
+        lastY = it->second.y;
+        it->second = {f.x, f.y, f.timestamp};
+    }
 
+    const bool photo = mode_ == Mode::Gallery && galleryZoomable();
     if (pinching_ && fingers_.size() >= 2 && pinchStartDist_ > 1.0) {
         double z = pinchStartZoom_ * (fingerSpread() / pinchStartDist_);
-        cam_->setZoom(z);
+        if (photo) {
+            // Zoom about the fingers: keep the image point that was under
+            // them at the start under their midpoint now, which also pans
+            // the photo along with a two-finger drag.
+            galleryZoom_ = std::min(kGalleryMaxZoom, std::max(1.0, z));
+            double mx, my;
+            const double s = galleryCoverScale() * galleryZoom_;
+            if (fingerMidView(mx, my) && s > 0.0) {
+                galleryPanX_ = pinchAnchorX_ - (mx - viewW_ * 0.5) / (s * galleryMat_.cols);
+                galleryPanY_ = pinchAnchorY_ - (my - viewH_ * 0.5) / (s * galleryMat_.rows);
+            }
+            galleryCrop(); // clamp the pan
+        } else if (mode_ != Mode::Gallery) {
+            cam_->setZoom(z);
+        }
         zoomLabelUntil_ = SDL_GetTicks() + 1200;
+    } else if (photo && galleryZoom_ > 1.001 && fingers_.size() == 1 &&
+               it != fingers_.end()) {
+        // One finger drags a zoomed photo around, the way it would on a phone.
+        double x0, y0, x1, y1;
+        fingerToView(lastX, lastY, x0, y0);
+        fingerToView(f.x, f.y, x1, y1);
+        const double s = galleryCoverScale() * galleryZoom_;
+        if (s > 0.0) {
+            galleryPanX_ -= (x1 - x0) / (s * galleryMat_.cols);
+            galleryPanY_ -= (y1 - y0) / (s * galleryMat_.rows);
+            galleryCrop();
+        }
     }
     if (tapCandidate_ && f.fingerId == tapFinger_) {
         float dx = f.x - tapStartX_, dy = f.y - tapStartY_;
@@ -693,6 +745,73 @@ void App::handleFingerUp(const SDL_TouchFingerEvent& f) {
         }
     }
     tapCandidate_ = false;
+}
+
+// Normalised touch coordinates to the logical view, through the touch panel's
+// own mapping and the display rotation -- the same path a tap takes.
+void App::fingerToView(float nx, float ny, double& vx, double& vy) const {
+    int px, py, ix, iy;
+    mapTouch(nx, ny, px, py);
+    physicalToView(px, py, ix, iy);
+    vx = ix;
+    vy = iy;
+}
+
+bool App::fingerMidView(double& vx, double& vy) const {
+    if (fingers_.size() < 2) return false;
+    auto it = fingers_.begin();
+    double ax, ay, bx, by;
+    fingerToView(it->second.x, it->second.y, ax, ay);
+    ++it;
+    fingerToView(it->second.x, it->second.y, bx, by);
+    vx = 0.5 * (ax + bx);
+    vy = 0.5 * (ay + by);
+    return true;
+}
+
+void App::resetGalleryZoom() {
+    galleryZoom_ = 1.0;
+    galleryPanX_ = galleryPanY_ = 0.5;
+    pinching_ = false; // a pinch in progress belonged to the previous photo
+}
+
+bool App::galleryZoomable() const {
+    return gallery_ && !gallery_->empty() && !gallery_->currentIsVideo() &&
+           !galleryMat_.empty();
+}
+
+// renderMat fills the screen with the image ("cover"), so at 1x one image
+// pixel is this many screen pixels, and at zoom z, z times that.
+double App::galleryCoverScale() const {
+    if (galleryMat_.empty()) return 0.0;
+    return std::max((double)viewW_ / galleryMat_.cols,
+                    (double)viewH_ / galleryMat_.rows);
+}
+
+void App::galleryViewToImage(double vx, double vy, double& u, double& v) const {
+    const double s = galleryCoverScale() * galleryZoom_;
+    if (s <= 0.0) { u = v = 0.5; return; }
+    u = galleryPanX_ + (vx - viewW_ * 0.5) / (s * galleryMat_.cols);
+    v = galleryPanY_ + (vy - viewH_ * 0.5) / (s * galleryMat_.rows);
+}
+
+SDL_Rect App::galleryCrop() {
+    const int iw = galleryMat_.cols, ih = galleryMat_.rows;
+    if (iw <= 0 || ih <= 0) return SDL_Rect{0, 0, 0, 0};
+    const double z = std::max(1.0, galleryZoom_);
+    // A crop of 1/z of the image each way, kept on the image. renderMat
+    // centres it on the screen, so the screen centre is the pan point exactly
+    // and the pinch's anchor maths holds right up to the edges. (Where the
+    // screen's shape differs from the photo's, cover trims a sliver off one
+    // axis that the pan cannot reach -- the same sliver trimmed at 1x.)
+    const double half = 0.5 / z;
+    galleryPanX_ = std::min(1.0 - half, std::max(half, galleryPanX_));
+    galleryPanY_ = std::min(1.0 - half, std::max(half, galleryPanY_));
+    const int cw = std::max(1, (int)std::lround(iw / z));
+    const int ch = std::max(1, (int)std::lround(ih / z));
+    const int cx = std::min(iw - cw, std::max(0, (int)std::lround(galleryPanX_ * iw) - cw / 2));
+    const int cy = std::min(ih - ch, std::max(0, (int)std::lround(galleryPanY_ * ih) - ch / 2));
+    return SDL_Rect{cx, cy, cw, ch};
 }
 
 void App::onTap(int x, int y) {
@@ -743,10 +862,14 @@ void App::dispatch(Action a) {
         case Action::ZoomIn:      cam_->zoomIn(); break;
         case Action::ZoomOut:     cam_->zoomOut(); break;
         case Action::OpenGallery:
-            gallery_->refresh(); gallery_->selectNewest(); refreshThumbnail(); mode_ = Mode::Gallery; break;
+            gallery_->refresh(); gallery_->selectNewest(); refreshThumbnail();
+            resetGalleryZoom();
+            mode_ = Mode::Gallery;
+            break;
         case Action::Back:        mode_ = Mode::Camera; break;
-        case Action::Prev:        gallery_->prev(); break;
-        case Action::Next:        gallery_->next(); break;
+        // The strip reads like a timeline: the left arrow goes back in time.
+        case Action::Prev:        gallery_->older(); resetGalleryZoom(); break;
+        case Action::Next:        gallery_->newer(); resetGalleryZoom(); break;
         case Action::Play:        playCurrentVideo(); break;
         case Action::Delete:
             if (gallery_ && !gallery_->empty()) mode_ = Mode::ConfirmDelete;
@@ -754,6 +877,7 @@ void App::dispatch(Action a) {
         case Action::ConfirmYes:
             gallery_->deleteCurrent();
             refreshThumbnail();
+            resetGalleryZoom();
             mode_ = gallery_->empty() ? Mode::Camera : Mode::Gallery;
             break;
         case Action::ConfirmNo:
@@ -1211,7 +1335,8 @@ void App::renderGallery() {
     if (galleryMat_.empty()) {
         clear(); // nothing captured yet: black with just the Back control
     } else {
-        renderMat(galleryMat_);
+        const SDL_Rect crop = galleryCrop();
+        renderMat(galleryMat_, 0, galleryZoom_ > 1.001 ? &crop : nullptr);
         // A centred play glyph hints that the current item is a video.
         if (gallery_->currentIsVideo()) {
             int r = std::max(30, viewH_ / 10);
@@ -1235,15 +1360,23 @@ void App::renderGallery() {
         }
     }
 
+    // Magnification while/just after pinching, or whenever zoomed in.
+    if (galleryZoomable() &&
+        (galleryZoom_ > 1.001 || SDL_GetTicks() < zoomLabelUntil_)) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%.1fx", galleryZoom_);
+        drawToast(buf, viewH_ / 8, std::max(2, viewH_ / 160));
+    }
+
     Uint8 a = menu_.awake() ? menu_.alpha() : (Uint8)0;
     if (a > 0) {
-        // Newest is on the left: an arrow with nothing further that way is
-        // drawn faint (it stays in place so the row never shifts under a
-        // finger tapping through the photos).
+        // Oldest is on the left, newest on the right: an arrow with nothing
+        // further that way is drawn faint (it stays in place so the row never
+        // shifts under a finger tapping through the photos).
         auto btns = buttonsFor(Mode::Gallery);
         for (const auto& b : btns) {
-            bool dead = (b.action == Action::Prev && gallery_->atNewest()) ||
-                        (b.action == Action::Next && gallery_->atOldest());
+            bool dead = (b.action == Action::Prev && gallery_->atOldest()) ||
+                        (b.action == Action::Next && gallery_->atNewest());
             Menu::drawButton(ren_, b, dead ? (Uint8)(a / 3) : a);
         }
     }
